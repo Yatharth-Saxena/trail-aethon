@@ -1,0 +1,13 @@
+# AETHON — Space Payload Perception & Telemetry Engine Dependencies
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+websockets>=12.0
+pydantic>=2.6.0
+opencv-python>=4.8.0
+numpy>=1.24.0,<2.0.0
+ultralytics>=8.1.0
+mediapipe>=0.10.0
+pyttsx3>=2.90
+SpeechRecognition>=3.10.0
+python-multipart>=0.0.9
+requests>=2.31.0

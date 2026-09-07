@@ -1,0 +1,65 @@
+{
+  "id": "payload_assembly_demo",
+  "name": "Payload Assembly (Demo)",
+  "version": "1.0.0",
+  "description": "5-step human-object assembly experiment for on-board BAS experiments",
+  "objects": [
+    { "id": "person", "name": "Person", "type": "actor" },
+    { "id": "object_a", "name": "Object A", "description": "Red Block", "color": "#ef4444" },
+    { "id": "object_b", "name": "Object B", "description": "Wooden Block", "color": "#3b82f6" },
+    { "id": "tray", "name": "Tray", "description": "Assembly Tray", "color": "#a855f7" },
+    { "id": "complete_button", "name": "Complete Button", "description": "Experiment Finish Button", "color": "#eab308" }
+  ],
+  "steps": [
+    {
+      "step_number": 1,
+      "label": "Pick up Object A",
+      "instruction": "Pick up Object A (Red Block) from its resting position.",
+      "expected_action": "PICK_UP",
+      "expected_object": "Object A",
+      "expected_target": null,
+      "guidance": "Please pick up Object A.",
+      "success_announcement": "Step 1 complete. Place Object A on Object B."
+    },
+    {
+      "step_number": 2,
+      "label": "Place Object A on Object B",
+      "instruction": "Place the red block on top of the wooden block.",
+      "expected_action": "PLACE",
+      "expected_object": "Object A",
+      "expected_target": "Object B",
+      "guidance": "Place Object A on Object B.",
+      "success_announcement": "Step 2 complete. Pick up Object A again."
+    },
+    {
+      "step_number": 3,
+      "label": "Pick up Object A again",
+      "instruction": "Pick up the red block from Object B.",
+      "expected_action": "PICK_UP",
+      "expected_object": "Object A",
+      "expected_target": null,
+      "guidance": "Pick up Object A again.",
+      "success_announcement": "Step 3 complete. Return Object A to the tray."
+    },
+    {
+      "step_number": 4,
+      "label": "Return Object A to Tray",
+      "instruction": "Return the red block into the tray.",
+      "expected_action": "PLACE",
+      "expected_object": "Object A",
+      "expected_target": "Tray",
+      "guidance": "Return Object A to the tray.",
+      "success_announcement": "Step 4 complete. Press the Complete Button."
+    },
+    {
+      "step_number": 5,
+      "label": "Press the Complete Button",
+      "instruction": "Press the complete button to conclude the experiment.",
+      "expected_action": "PRESS",
+      "expected_object": "Complete Button",
+      "expected_target": null,
+      "guidance": "Press the Complete Button to finish.",
+      "success_announcement": "Experiment completed successfully. All steps verified."
+    }
+  ]
+}

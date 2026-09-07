@@ -576,9 +576,15 @@ button:focus-visible, input:focus-visible {
 }
 
 .nav-item.active {
-  background: rgba(222, 232, 236, 0.14);
-  color: #f6f8f9;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+  background: #ffffff;
+  color: #0b0f12;
+  font-weight: 600;
+  box-shadow: 0 0 16px rgba(255, 255, 255, 0.22);
+}
+
+.nav-item.active svg {
+  color: #0b0f12;
+  stroke: #0b0f12;
 }
 
 .nav-item span {
@@ -1057,9 +1063,16 @@ button:focus-visible, input:focus-visible {
 
 .object-white { background: #f0f3f4; }
 .object-red { background: #ef495e; }
-.object-blue { background: #6db2ec; }
-.object-purple { background: #a67fea; }
-.object-yellow { background: #f0dc58; }
+.object-blue { background: #3b82f6; }
+.object-cyan { background: #06b6d4; }
+.object-green { background: #22c55e; }
+.object-yellow { background: #eab308; }
+.object-orange { background: #f97316; }
+.object-purple { background: #a855f7; }
+.object-pink { background: #ec4899; }
+.object-black { background: #1e293b; border: 1px solid rgba(255,255,255,0.4); }
+.object-gray { background: #94a3b8; }
+.object-brown { background: #b45309; }
 
 .current-action-content {
   display: flex;
@@ -1614,3 +1627,179 @@ button:focus-visible, input:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ==========================================================================
+   Mouse Depth Effect
+   Large diffused grey/white light field over physical glass surface
+   ========================================================================== */
+
+.mouse-depth-field {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background: radial-gradient(circle 520px at var(--mouse-x, 50%) var(--mouse-y, 50%), rgba(255, 255, 255, 0.065) 0%, rgba(215, 228, 235, 0.018) 42%, transparent 70%);
+  mix-blend-mode: screen;
+  transition: opacity 0.3s ease;
+}
+
+/* ==========================================================================
+   Workspace View Switching (Experiment & Logs Views)
+   ========================================================================== */
+
+.workspace-alt-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.alt-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.alt-view-header h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 500;
+  color: #f1f5f7;
+}
+
+.alt-view-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.step-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.step-card {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(14, 18, 21, 0.4);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.step-card.active-step {
+  border-color: rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.step-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.step-card strong {
+  color: #f4f7f8;
+  font-size: 14px;
+}
+
+.step-card p {
+  margin: 0;
+  color: rgba(220, 230, 235, 0.7);
+  font-size: 12px;
+  font-family: var(--mono);
+}
+
+.demo-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  background: rgba(234, 179, 8, 0.15);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  color: #fde047;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+}
+
+.sim-buttons-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.sim-btn {
+  padding: 6px 12px;
+  border: 1px solid rgba(220, 230, 235, 0.25);
+  border-radius: 6px;
+  background: rgba(16, 20, 24, 0.6);
+  color: rgba(240, 246, 248, 0.9);
+  font-size: 12px;
+  font-family: var(--mono);
+  transition: all 0.18s ease;
+}
+
+.sim-btn:hover {
+  border-color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.logs-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+}
+
+.logs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+}
+
+.logs-table th {
+  background: rgba(25, 30, 36, 0.6);
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(235, 242, 245, 0.85);
+  font-weight: 600;
+}
+
+.logs-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(225, 235, 240, 0.8);
+}
+
+.logs-table tr:hover td {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.log-tag {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.log-tag-step { background: rgba(34, 197, 94, 0.2); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.4); }
+.log-tag-violation { background: rgba(239, 68, 68, 0.2); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.4); }
+.log-tag-voice { background: rgba(59, 130, 246, 0.2); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.4); }
+.log-tag-action { background: rgba(168, 85, 247, 0.2); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.4); }
+.log-tag-exp { background: rgba(255, 255, 255, 0.15); color: #ffffff; border: 1px solid rgba(255, 255, 255, 0.3); }
+
