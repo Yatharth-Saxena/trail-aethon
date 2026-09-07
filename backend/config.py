@@ -39,14 +39,18 @@ STREAM_TARGET_FPS = CAMERA_FPS
 # MediaPipe cannot sustain 60 Hz on CPU, and the stream loop carries the last
 # known detections forward for the frames in between.
 #
-# Measured cost per inference pass on CPU is ~115 ms (~8.8 FPS), so on this
-# class of hardware the throttle is a ceiling rather than a brake. It matters
-# on a GPU/Jetson build, where uncapped inference would otherwise starve the
-# 60 FPS video path.
-AI_INFERENCE_FPS = 15
-# Floor on the inference thread's per-cycle sleep. Without this the loop spins
-# with a ~2 ms yield, competing with the capture and stream threads for the
-# GIL and dragging the video path below its target FPS.
+# Measured cost per inference pass on CPU:
+#   MediaPipe Hands only : ~18-25 ms  → up to ~40 FPS headroom
+#   YOLO + MediaPipe Hands: ~115 ms  → ~8.8 FPS effective
+#
+# Hand tracking and YOLO now run on separate threads so the hand skeleton
+# overlay updates at ~25 Hz (matching perceived hand motion) while the heavier
+# YOLO detection runs at ~10 Hz and its results are carried forward by the
+# stream loop for the frames in between.
+AI_HAND_TRACKING_FPS = 25   # MediaPipe Hands — fast, drives overlay sync
+AI_INFERENCE_FPS = 10       # YOLOv8 object detection — heavier, lower rate
+# Floor on each inference thread's per-cycle sleep so neither loop spins and
+# starves the capture / stream threads for the GIL.
 AI_MIN_IDLE_SECONDS = 0.008
 
 # JPEG quality for the shared MJPEG encode (encoded once per frame, fanned out
