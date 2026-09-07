@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import base64
+import time
 import cv2
 import numpy as np
 from pathlib import Path
@@ -69,13 +70,24 @@ async def broadcast_telemetry():
                     except Exception:
                         b64_img = ""
 
+                # End-to-end latency: camera capture -> this telemetry send.
+                # camera_service reports capture -> publish; the remainder is
+                # overlay/encode plus this broadcast hop.
+                capture_ts = camera_service.get_capture_timestamp()
+                e2e_latency_ms = (
+                    round((time.time() - capture_ts) * 1000.0, 1) if capture_ts else 0.0
+                )
+
                 payload = {
                     "type": "TELEMETRY",
                     "camera": {
                         "fps": round(camera_service.fps if camera_service.fps > 0 else 60.0, 1),
                         "recording": video_recorder.is_recording,
                         "device_index": camera_service.camera_index,
-                        "mirror": camera_service.mirror
+                        "mirror": camera_service.mirror,
+                        "latency_ms": e2e_latency_ms,
+                        "pipeline_latency_ms": camera_service.get_pipeline_latency_ms(),
+                        "negotiated": camera_service.negotiated
                     },
                     "perception": perception,
                     "experiment": exp_state,
@@ -125,6 +137,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 "recording": video_recorder.is_recording,
                 "device_index": camera_service.camera_index,
                 "mirror": camera_service.mirror,
+                "latency_ms": camera_service.get_pipeline_latency_ms(),
+                "pipeline_latency_ms": camera_service.get_pipeline_latency_ms(),
+                "negotiated": camera_service.negotiated,
                 "devices": camera_service.list_cameras()
             },
             "experiment": experiment_manager.get_state(),
@@ -243,10 +258,9 @@ async def upload_camera_frame(request: Request):
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if frame is not None:
             camera_service.inject_client_frame(frame)
-            has_person = perception_pipeline.latest_pose is not None or any(o.get("raw_label") == "Person" for o in perception_pipeline.latest_objects)
             return JSONResponse({
                 "status": "ok",
-                "person_detected": has_person
+                "person_detected": perception_pipeline.person_detected()
             })
         return JSONResponse({"status": "error", "message": "Decode failed"}, status_code=400)
     except Exception as e:

@@ -54,6 +54,42 @@ def has_wake_word(text: str) -> bool:
             return True
     return False
 
+
+# Prefix patterns applied in order when removing a wake phrase. Ordered
+# longest-form first so "ethane than" is consumed as one call rather than
+# leaving a stray "than" behind.
+WAKE_STRIP_PATTERNS = (
+    rf"^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.\s]*",
+    rf"^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)\s+(?:{WAKE_TWO_WORD_VARIANTS})\b[,.\s]*",
+    rf"^\s*(?:{WAKE_SINGLE_WORD_VARIANTS})\b[,.\s]*",
+)
+
+
+def strip_wake_word(text: str) -> str:
+    """
+    Remove a leading wake phrase and return just the command.
+
+    Public counterpart to the frontend's `stripWakeWord()`, so the browser's
+    wake-word gating can be validated server-side rather than trusted.
+    Returns an empty string when the utterance was only a wake call.
+    """
+    if not text:
+        return ""
+    cleaned = text.strip()
+    for pat in WAKE_STRIP_PATTERNS:
+        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
+
+
+def split_wake_command(text: str) -> tuple[bool, str]:
+    """
+    Return `(had_wake_word, command_text)` for an utterance.
+
+    Mirrors the frontend contract: the caller can reject anything without a
+    wake word outright, and act on the remaining command text.
+    """
+    return has_wake_word(text), strip_wake_word(text)
+
 class CommandParser:
     def __init__(self):
         self.intent_patterns = [
@@ -211,11 +247,7 @@ class CommandParser:
     def _strip_wake_word(self, text: str) -> str:
         """Remove wake-word prefix from the text so intent matching works
         on the actual command part."""
-        cleaned = text.strip()
-        cleaned = re.sub(rf"^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.\s]*", "", cleaned, flags=re.IGNORECASE).strip()
-        cleaned = re.sub(rf"^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)\s+(?:{WAKE_TWO_WORD_VARIANTS})\b[,.\s]*", "", cleaned, flags=re.IGNORECASE).strip()
-        cleaned = re.sub(rf"^\s*(?:{WAKE_SINGLE_WORD_VARIANTS})\b[,.\s]*", "", cleaned, flags=re.IGNORECASE).strip()
-        return cleaned
+        return strip_wake_word(text)
 
     def parse(self, text: str) -> Intent:
         if not text:

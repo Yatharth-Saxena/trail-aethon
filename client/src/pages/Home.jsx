@@ -34,6 +34,31 @@ const WS_URL = typeof window !== "undefined"
   ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`
   : "ws://localhost:8000/ws";
 
+// --- Toast notifications (camera actions confirm here, not in the chat) ---
+const TOAST_DURATION_MS = 2800;
+
+// --- Voice activity detection ---
+// How long after the last interim speech result the mic stops being treated
+// as "hearing speech". Long enough not to flicker between words.
+const SPEECH_ACTIVE_DEBOUNCE_MS = 750;
+
+// --- Wake-word state machine ---
+const WAKE_STATE = {
+  // Mic armed and transcribing, but nothing leaves the browser until the
+  // wake word is matched locally.
+  IDLE_LISTENING: "IDLE_LISTENING",
+  // Wake word heard; everything said from here on is the command.
+  CAPTURING_COMMAND: "CAPTURING_COMMAND"
+};
+// Silence after the wake word that finalises the command and sends it once.
+const COMMAND_END_SILENCE_MS = 1300;
+// Hard cap on a single command capture, so a stuck session always recovers.
+const COMMAND_CAPTURE_TIMEOUT_MS = 12000;
+// Wake acknowledgement chime.
+const WAKE_CHIME_FREQ_HZ = 880;
+const WAKE_CHIME_DURATION_MS = 130;
+const WAKE_CHIME_GAIN = 0.07;
+
 function getColorClass(colorName = "") {
   const c = String(colorName).toLowerCase();
   if (c.includes("red") || c.includes("crimson")) return "object-red";
@@ -217,6 +242,8 @@ export default function Home() {
 
   // Camera & Telemetry state
   const [fps, setFps] = useState(60);
+  // Real capture -> display latency reported by the backend, not just FPS.
+  const [latencyMs, setLatencyMs] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [cameras, setCameras] = useState([{ index: 0, name: "Camera 0 (USB)", active: true }]);
   const [selectedCamera, setSelectedCamera] = useState(0);
@@ -354,7 +381,7 @@ export default function Home() {
 
                         const labelText = isPerson
                           ? `ASTRONAUT ${Math.round((obj.confidence || 0.95) * 100)}%`
-                          : `${obj.is_held ? "● HELD: " : ""}${obj.display_name || obj.label}`;
+                          : `${obj.is_held ? "● HELD: " : ""}${obj.moving || obj.is_moving ? "▲ MOVE: " : ""}${obj.display_name || obj.label}`;
                         ctx.font = "600 11px Inter, sans-serif";
                         const tw = ctx.measureText(labelText).width;
                         const badgeH = 18;
@@ -467,6 +494,13 @@ export default function Home() {
   const [continuousListening, setContinuousListening] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("idle"); // "idle" | "listening" | "processing" | "wake_detected"
   const [liveTranscript, setLiveTranscript] = useState("");
+  // True only while speech is actually being heard, as opposed to the mic
+  // merely being armed. Drives the mic pulse animation.
+  const [isSpeechActive, setIsSpeechActive] = useState(false);
+  // Which half of the wake-word state machine we are in.
+  const [wakeState, setWakeState] = useState(WAKE_STATE.IDLE_LISTENING);
+  // Transient, non-chat confirmation for camera actions.
+  const [toast, setToast] = useState(null);
   const [audioRecording, setAudioRecording] = useState(false);
   const audioRecorderRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -517,6 +551,45 @@ export default function Home() {
   const [isAssistantActive, setIsAssistantActive] = useState(false);
   const activeTimerRef = useRef(null);
   const lastWakeTimeRef = useRef(0);
+
+  // Local confirmation channel for hardware/camera buttons. Deliberately
+  // separate from the conversation state so clicking Snapshot or Record does
+  // not push chat bubbles, scroll the chat panel, or trigger TTS.
+  const toastTimerRef = useRef(null);
+  const showToast = useCallback((text, tone = "info") => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ id: Date.now(), text, tone });
+    toastTimerRef.current = setTimeout(() => setToast(null), TOAST_DURATION_MS);
+  }, []);
+
+  useEffect(() => () => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+  }, []);
+
+  // Short chime acknowledging the wake word, so the operator knows AETHON is
+  // now capturing a command without having to look at the screen.
+  const audioCtxRef = useRef(null);
+  const playWakeChime = useCallback(() => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      if (!audioCtxRef.current) audioCtxRef.current = new AudioCtx();
+      const ctx = audioCtxRef.current;
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = WAKE_CHIME_FREQ_HZ;
+      gain.gain.setValueAtTime(WAKE_CHIME_GAIN, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + WAKE_CHIME_DURATION_MS / 1000);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + WAKE_CHIME_DURATION_MS / 1000);
+    } catch (e) {
+      /* chime is non-essential */
+    }
+  }, []);
 
   const WAKE_WORD_REGEX = /^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)?\s*(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|titan|python|than|then|hetan|tane|thanks?|ton|tan|aton)\b[,\s.]*/i;
   const REPEATED_WAKE_REGEX = /^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,\s.]*/i;
@@ -651,6 +724,9 @@ export default function Home() {
   const lastSpokenIdRef = useRef(1); // 1 is initial welcome message
   const lastSpokenTextRef = useRef("");
   const lastSpokenTimeRef = useRef(0);
+  // True strictly while AETHON's own TTS is audible. Used to mute wake-word
+  // recognition so the assistant cannot trigger itself.
+  const isSpeakingRef = useRef(false);
 
   const speakAssistantResponse = useCallback((text, msgId = null) => {
     if (!text || !voiceModeRef.current) return;
@@ -697,23 +773,28 @@ export default function Home() {
 
         // Wave animation starts when AETHON speaks
         setIsAssistantActive(true);
+        isSpeakingRef.current = true;
         if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
         const estDuration = Math.max(3000, clean.length * 90);
         activeTimerRef.current = setTimeout(() => {
           setIsAssistantActive(false);
+          isSpeakingRef.current = false;
           setVoiceStatus("idle");
         }, estDuration);
 
         utter.onstart = () => {
           setIsAssistantActive(true);
+          isSpeakingRef.current = true;
         };
         utter.onend = () => {
           setIsAssistantActive(false);
+          isSpeakingRef.current = false;
           setVoiceStatus("idle");
           if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
         };
         utter.onerror = () => {
           setIsAssistantActive(false);
+          isSpeakingRef.current = false;
           setVoiceStatus("idle");
           if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
         };
@@ -723,6 +804,7 @@ export default function Home() {
     } catch (e) {
       console.warn("[TTS SpeechSynthesis Error]", e);
       setIsAssistantActive(false);
+      isSpeakingRef.current = false;
     }
   }, [getPreferredVoice]);
 
@@ -752,6 +834,7 @@ export default function Home() {
             if (data.type === "INIT" || data.type === "TELEMETRY") {
               if (data.camera) {
                 if (data.camera.fps !== undefined) setFps(data.camera.fps || 60);
+                if (data.camera.latency_ms !== undefined) setLatencyMs(data.camera.latency_ms);
                 if (data.camera.recording !== undefined) setIsRecording(data.camera.recording);
                 if (data.camera.devices) setCameras(data.camera.devices);
                 if (data.camera.device_index !== undefined) setSelectedCamera(data.camera.device_index);
@@ -780,6 +863,8 @@ export default function Home() {
                         colorName: colName,
                         held: Boolean(obj.held || obj.is_held),
                         heldBy: obj.held_by || "",
+                        moving: Boolean(obj.moving || obj.is_moving),
+                        velocity: Number(obj.velocity || 0),
                         colorClass: getColorClass(colName || l)
                       };
                     });
@@ -991,6 +1076,136 @@ export default function Home() {
 
   const restartTimerRef = useRef(null);
 
+  // --- Wake-word session state ---
+  const wakeStateRef = useRef(WAKE_STATE.IDLE_LISTENING);
+  const commandBufferRef = useRef("");
+  const commandSilenceTimerRef = useRef(null);
+  const commandTimeoutRef = useRef(null);
+  const speechActiveTimerRef = useRef(null);
+  const clearCommandTimers = useCallback(() => {
+    if (commandSilenceTimerRef.current) {
+      clearTimeout(commandSilenceTimerRef.current);
+      commandSilenceTimerRef.current = null;
+    }
+    if (commandTimeoutRef.current) {
+      clearTimeout(commandTimeoutRef.current);
+      commandTimeoutRef.current = null;
+    }
+  }, []);
+
+  const enterIdleListening = useCallback(() => {
+    clearCommandTimers();
+    commandBufferRef.current = "";
+    wakeStateRef.current = WAKE_STATE.IDLE_LISTENING;
+    setWakeState(WAKE_STATE.IDLE_LISTENING);
+    setLiveTranscript("");
+  }, [clearCommandTimers]);
+
+  // Marks speech as active and schedules it to lapse after a short silence.
+  const markSpeechActive = useCallback(() => {
+    setIsSpeechActive(true);
+    if (speechActiveTimerRef.current) clearTimeout(speechActiveTimerRef.current);
+    speechActiveTimerRef.current = setTimeout(() => {
+      setIsSpeechActive(false);
+    }, SPEECH_ACTIVE_DEBOUNCE_MS);
+  }, []);
+
+  const markSpeechInactive = useCallback(() => {
+    if (speechActiveTimerRef.current) clearTimeout(speechActiveTimerRef.current);
+    speechActiveTimerRef.current = setTimeout(() => {
+      setIsSpeechActive(false);
+    }, SPEECH_ACTIVE_DEBOUNCE_MS);
+  }, []);
+
+  // Finalise a wake-word session: send the captured command exactly once,
+  // suspend transcription, and return to waiting for the next "Hey AETHON".
+  const finalizeCommand = useCallback(() => {
+    clearCommandTimers();
+    const captured = commandBufferRef.current.trim();
+    commandBufferRef.current = "";
+
+    // A bare wake word with no command reads as a greeting, matching the
+    // backend parser's behaviour.
+    const toSend = captured || "hello";
+    const display = normalizeAethonWakeWordRef.current
+      ? normalizeAethonWakeWordRef.current(`hey aethon ${captured}`.trim())
+      : `Hey AETHON, ${captured}`;
+
+    setVoiceStatus("processing");
+    if (sendCommandRef.current) {
+      sendCommandRef.current(toSend, display);
+    }
+
+    wakeStateRef.current = WAKE_STATE.IDLE_LISTENING;
+    setWakeState(WAKE_STATE.IDLE_LISTENING);
+    setLiveTranscript("");
+    setIsSpeechActive(false);
+
+    // Stop transcribing between commands rather than leaving an open
+    // recognition session; onend re-arms it if always-on is still enabled.
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) {}
+    }
+  }, [clearCommandTimers]);
+
+  const finalizeCommandRef = useRef(finalizeCommand);
+  useEffect(() => {
+    finalizeCommandRef.current = finalizeCommand;
+  }, [finalizeCommand]);
+
+  const scheduleCommandFinalize = useCallback(() => {
+    if (commandSilenceTimerRef.current) clearTimeout(commandSilenceTimerRef.current);
+    commandSilenceTimerRef.current = setTimeout(() => {
+      if (wakeStateRef.current === WAKE_STATE.CAPTURING_COMMAND) {
+        finalizeCommandRef.current();
+      }
+    }, COMMAND_END_SILENCE_MS);
+  }, []);
+
+  const beginCommandCapture = useCallback((initialText = "") => {
+    wakeStateRef.current = WAKE_STATE.CAPTURING_COMMAND;
+    setWakeState(WAKE_STATE.CAPTURING_COMMAND);
+    commandBufferRef.current = initialText.trim();
+    lastWakeTimeRef.current = Date.now();
+    setVoiceStatus("wake_detected");
+    playWakeChime();
+    markSpeechActive();
+
+    if (commandTimeoutRef.current) clearTimeout(commandTimeoutRef.current);
+    commandTimeoutRef.current = setTimeout(() => {
+      if (wakeStateRef.current === WAKE_STATE.CAPTURING_COMMAND) {
+        finalizeCommandRef.current();
+      }
+    }, COMMAND_CAPTURE_TIMEOUT_MS);
+
+    scheduleCommandFinalize();
+  }, [playWakeChime, markSpeechActive, scheduleCommandFinalize]);
+
+  const beginCommandCaptureRef = useRef(beginCommandCapture);
+  useEffect(() => {
+    beginCommandCaptureRef.current = beginCommandCapture;
+  }, [beginCommandCapture]);
+
+  const scheduleCommandFinalizeRef = useRef(scheduleCommandFinalize);
+  useEffect(() => {
+    scheduleCommandFinalizeRef.current = scheduleCommandFinalize;
+  }, [scheduleCommandFinalize]);
+
+  const markSpeechActiveRef = useRef(markSpeechActive);
+  useEffect(() => {
+    markSpeechActiveRef.current = markSpeechActive;
+  }, [markSpeechActive]);
+
+  const markSpeechInactiveRef = useRef(markSpeechInactive);
+  useEffect(() => {
+    markSpeechInactiveRef.current = markSpeechInactive;
+  }, [markSpeechInactive]);
+
+  const enterIdleListeningRef = useRef(enterIdleListening);
+  useEffect(() => {
+    enterIdleListeningRef.current = enterIdleListening;
+  }, [enterIdleListening]);
+
   // Continuous Listening – always-on voice recognition
   const startContinuousListening = useCallback(() => {
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1013,56 +1228,97 @@ export default function Home() {
 
     recognition.onstart = () => {
       setIsListening(true);
-      setVoiceStatus("listening");
+      setVoiceStatus(wakeStateRef.current === WAKE_STATE.CAPTURING_COMMAND ? "wake_detected" : "listening");
     };
 
+    // Speech boundary events drive the "actually hearing you" indicator.
+    recognition.onspeechstart = () => {
+      if (markSpeechActiveRef.current) markSpeechActiveRef.current();
+    };
+    recognition.onspeechend = () => {
+      if (markSpeechInactiveRef.current) markSpeechInactiveRef.current();
+      if (wakeStateRef.current === WAKE_STATE.CAPTURING_COMMAND && scheduleCommandFinalizeRef.current) {
+        scheduleCommandFinalizeRef.current();
+      }
+    };
+
+    // Wake-word state machine.
+    //
+    // IDLE_LISTENING     transcripts are matched against the wake word
+    //                    locally; nothing is sent, no bubble, no TTS.
+    // CAPTURING_COMMAND  everything after the wake word accumulates until a
+    //                    short silence finalises and sends it exactly once.
     recognition.onresult = (event) => {
+      // Ignore the assistant's own speech echoing back through the mic.
+      const assistantSpeaking =
+        isSpeakingRef.current ||
+        (typeof window !== "undefined" && "speechSynthesis" in window && window.speechSynthesis.speaking);
+      if (assistantSpeaking) {
+        setLiveTranscript("");
+        return;
+      }
+
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          setLiveTranscript("");
-          const inActiveWindow = (Date.now() - (lastWakeTimeRef.current || 0)) < 25000;
-          const { hadWake, command } = stripWakeWordRef.current ? stripWakeWordRef.current(transcript) : { hadWake: false, command: "" };
 
-          if (hadWake) {
-            lastWakeTimeRef.current = Date.now();
-            const toSend = command ? command : "hello";
-            const displayBubble = normalizeAethonWakeWordRef.current ? normalizeAethonWakeWordRef.current(transcript) : transcript;
-            setIsAssistantActive(true);
-            setVoiceStatus("wake_detected");
-            if (sendCommandRef.current) {
-              sendCommandRef.current(toSend, displayBubble);
+        if (event.results[i].isFinal) {
+          if (markSpeechActiveRef.current) markSpeechActiveRef.current();
+
+          if (wakeStateRef.current === WAKE_STATE.IDLE_LISTENING) {
+            // Gate: only a local wake-word match may start a session.
+            const { hadWake, command } = stripWakeWordRef.current
+              ? stripWakeWordRef.current(transcript)
+              : { hadWake: false, command: "" };
+            if (!hadWake) {
+              setLiveTranscript("");
+              continue;
             }
-          } else if (inActiveWindow) {
-            const trimmed = transcript.trim();
-            if (trimmed.length > 2) {
-              lastWakeTimeRef.current = Date.now();
-              setIsAssistantActive(true);
-              setVoiceStatus("processing");
-              if (sendCommandRef.current) {
-                sendCommandRef.current(trimmed, trimmed);
-              }
-            }
+            // Anything already said after the wake word seeds the command.
+            if (beginCommandCaptureRef.current) beginCommandCaptureRef.current(command);
           } else {
-            // Strictly require calling AETHON when outside active conversation window
-            return;
+            // Mid-session: strip a repeated wake word, keep the rest.
+            const { command } = stripWakeWordRef.current
+              ? stripWakeWordRef.current(transcript)
+              : { command: transcript };
+            const addition = (command || transcript).trim();
+            if (addition) {
+              commandBufferRef.current = `${commandBufferRef.current} ${addition}`.trim();
+            }
+            if (scheduleCommandFinalizeRef.current) scheduleCommandFinalizeRef.current();
           }
         } else {
           interim += transcript;
         }
       }
-      if (interim) {
-        const inActiveWindow = (Date.now() - (lastWakeTimeRef.current || 0)) < 25000;
-        const { hadWake } = stripWakeWordRef.current ? stripWakeWordRef.current(interim) : { hadWake: false };
-        if (hadWake) {
-          const displayBubble = normalizeAethonWakeWordRef.current ? normalizeAethonWakeWordRef.current(interim) : interim;
-          setLiveTranscript(displayBubble);
-        } else if (inActiveWindow && interim.trim().length > 2) {
-          setLiveTranscript(interim.trim());
-        } else {
-          setLiveTranscript("");
-        }
+
+      if (!interim) return;
+      if (markSpeechActiveRef.current) markSpeechActiveRef.current();
+
+      if (wakeStateRef.current === WAKE_STATE.CAPTURING_COMMAND) {
+        // Show what is being captured, and keep the silence timer alive.
+        const preview = `${commandBufferRef.current} ${interim}`.trim();
+        setLiveTranscript(preview);
+        if (scheduleCommandFinalizeRef.current) scheduleCommandFinalizeRef.current();
+        return;
+      }
+
+      // Idle: as soon as the wake word is heard in the interim stream,
+      // enter CAPTURING_COMMAND (chime + pulse) without sending anything.
+      // The command text itself is only committed on a final result so the
+      // same utterance is not written into the buffer twice.
+      const { hadWake, command } = stripWakeWordRef.current
+        ? stripWakeWordRef.current(interim)
+        : { hadWake: false, command: "" };
+      if (hadWake) {
+        if (beginCommandCaptureRef.current) beginCommandCaptureRef.current("");
+        setLiveTranscript(
+          normalizeAethonWakeWordRef.current
+            ? normalizeAethonWakeWordRef.current(interim)
+            : (command || interim)
+        );
+      } else {
+        setLiveTranscript("");
       }
     };
 
@@ -1081,7 +1337,10 @@ export default function Home() {
     };
 
     recognition.onend = () => {
+      setIsSpeechActive(false);
       if (continuousListeningRef.current) {
+        // Re-arm for the next "Hey AETHON". This is also the path taken right
+        // after a command is sent, since finalizeCommand stops recognition.
         if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
         restartTimerRef.current = setTimeout(() => {
           try {
@@ -1093,6 +1352,7 @@ export default function Home() {
       } else {
         setIsListening(false);
         setVoiceStatus("idle");
+        if (enterIdleListeningRef.current) enterIdleListeningRef.current();
       }
     };
 
@@ -1108,6 +1368,10 @@ export default function Home() {
       clearTimeout(restartTimerRef.current);
       restartTimerRef.current = null;
     }
+    if (speechActiveTimerRef.current) {
+      clearTimeout(speechActiveTimerRef.current);
+      speechActiveTimerRef.current = null;
+    }
     if (recognitionRef.current) {
       try { recognitionRef.current.abort(); } catch (e) {}
       recognitionRef.current = null;
@@ -1115,7 +1379,9 @@ export default function Home() {
     setIsListening(false);
     setVoiceStatus("idle");
     setLiveTranscript("");
-  }, []);
+    setIsSpeechActive(false);
+    enterIdleListening();
+  }, [enterIdleListening]);
 
   // Effect: start/stop continuous listening when toggle changes
   useEffect(() => {
@@ -1150,18 +1416,19 @@ export default function Home() {
     }
 
     if (SpeechRec) {
-      // Toggle Continuous Listening
+      // Toggle the armed state. Arming only starts IDLE_LISTENING — nothing
+      // is sent anywhere until the wake word is matched locally.
       const newState = !continuousListening;
       setContinuousListening(newState);
-      
+      enterIdleListening();
+
       if (newState) {
-        lastWakeTimeRef.current = Date.now();
-        setIsAssistantActive(true);
-        setLiveTranscript("");
+        setVoiceStatus("listening");
+        showToast("Voice armed — say \"Hey AETHON\"", "info");
       } else {
         setIsListening(false);
         setVoiceStatus("idle");
-        setLiveTranscript("");
+        setIsSpeechActive(false);
       }
     } else {
       // Fallback manual Push-To-Talk
@@ -1179,26 +1446,31 @@ export default function Home() {
     }
   };
 
-  // Camera action handlers
+  // Camera action handlers.
+  //
+  // These confirm via the local toast, not sendCommand(): a camera button is
+  // a hardware action, not a voice/chat interaction, so it must not push chat
+  // bubbles, scroll the conversation panel, or speak through TTS.
   const handleSnapshot = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/camera/snapshot`, { method: "POST" });
       const data = await res.json();
-      sendCommand(`Snapshot captured: ${data.filename || "saved"}`);
+      showToast(data.filename ? `Snapshot saved · ${data.filename}` : "Snapshot saved", "success");
     } catch (e) {
-      sendCommand("Snapshot captured");
+      showToast("Snapshot failed — check the camera feed", "error");
     }
   };
 
   const handleRecordToggle = async () => {
+    const wasRecording = isRecording;
     try {
-      const endpoint = isRecording ? "/api/camera/record/stop" : "/api/camera/record/start";
-      const res = await fetch(`${API_BASE}${endpoint}`, { method: "POST" });
-      const data = await res.json();
-      setIsRecording(!isRecording);
-      sendCommand(isRecording ? "Recording stopped and saved locally." : "Recording started.");
+      const endpoint = wasRecording ? "/api/camera/record/stop" : "/api/camera/record/start";
+      await fetch(`${API_BASE}${endpoint}`, { method: "POST" });
+      setIsRecording(!wasRecording);
+      showToast(wasRecording ? "Recording stopped and saved" : "Recording started", "success");
     } catch (e) {
-      setIsRecording(!isRecording);
+      setIsRecording(!wasRecording);
+      showToast(wasRecording ? "Failed to stop recording" : "Failed to start recording", "error");
     }
   };
 
@@ -1396,6 +1668,11 @@ export default function Home() {
                         <div className="camera-status">
                           <StatusDot label="REC" tone={isRecording ? "white" : "white"} />
                           <span>{fps} FPS</span>
+                          {latencyMs !== null && (
+                            <span title="Camera capture to telemetry latency">
+                              {Math.round(latencyMs)} ms
+                            </span>
+                          )}
                           <button
                             type="button"
                             onClick={handleFullscreen}
@@ -1559,6 +1836,20 @@ export default function Home() {
                           <span className="record-ring" /> Record
                         </button>
                       </div>
+
+                      {/* Local confirmation for camera actions — never routed
+                          through the assistant conversation. */}
+                      {toast && (
+                        <div
+                          key={toast.id}
+                          className={`camera-toast camera-toast-${toast.tone}`}
+                          role="status"
+                          aria-live="polite"
+                        >
+                          {toast.tone === "error" ? <AlertTriangle size={13} /> : <Check size={13} />}
+                          <span>{toast.text}</span>
+                        </div>
+                      )}
                     </div>
                   </GlassPanel>
 
@@ -1607,7 +1898,9 @@ export default function Home() {
                               </span>
                               {item.colorName && (
                                 <span style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                                  Color: {item.colorName} {item.held ? `• Held by ${item.heldBy || "hand"}` : ""}
+                                  Color: {item.colorName}
+                                  {item.held ? ` • Held by ${item.heldBy || "hand"}` : ""}
+                                  {item.moving && !item.held ? " • Moving" : ""}
                                 </span>
                               )}
                             </div>
@@ -1986,7 +2279,9 @@ export default function Home() {
                   gap: "6px",
                   animation: "pulse 2s infinite"
                 }}>
-                  <span style={{ color: "#22c55e", fontWeight: "bold" }}>🎙️ Hearing:</span>
+                  <span style={{ color: "#22c55e", fontWeight: "bold" }}>
+                    {wakeState === WAKE_STATE.CAPTURING_COMMAND ? "🎙️ Command:" : "🎙️ Hearing:"}
+                  </span>
                   <span>"{liveTranscript}"</span>
                 </div>
               )}
@@ -1994,19 +2289,32 @@ export default function Home() {
               <div className="assistant-input-wrap">
                 <button
                   type="button"
+                  /* `active` = mic is armed/highlighted. The pulse animation
+                     is bound separately to actual detected speech, so "armed,
+                     waiting" and "hearing you now" look different. */
                   className={`input-mic ${isListening || continuousListening || audioRecording ? "active" : ""}`}
                   style={{
                     color: audioRecording
                       ? "#ef4444"
+                      : wakeState === WAKE_STATE.CAPTURING_COMMAND
+                      ? "#38bdf8"
                       : continuousListening
                       ? "#22c55e"
                       : isListening
                       ? "#3b82f6"
                       : "inherit",
-                    animation: (isListening || audioRecording) ? "pulse 1.5s ease-in-out infinite" : "none"
+                    animation: isSpeechActive ? "pulse 1.5s ease-in-out infinite" : "none"
                   }}
                   onClick={handleMicClick}
-                  title={continuousListening ? "Always-on voice enabled (Click to switch to manual)" : audioRecording ? "Click to stop recording and send" : isListening ? "Listening... Click to stop" : "Push to talk"}
+                  title={
+                    audioRecording
+                      ? "Click to stop recording and send"
+                      : wakeState === WAKE_STATE.CAPTURING_COMMAND
+                      ? "Listening for your command..."
+                      : continuousListening
+                      ? "Armed — say 'Hey AETHON' (click to disable)"
+                      : "Push to talk"
+                  }
                 >
                   <Mic size={18} />
                 </button>

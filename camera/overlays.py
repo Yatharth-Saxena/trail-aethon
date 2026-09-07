@@ -26,9 +26,13 @@ def draw_perception_overlays(
     frame: np.ndarray,
     detections: List[Dict[str, Any]],
     hands: Optional[List[Dict[str, Any]]] = None,
-    pose: Optional[Dict[str, Any]] = None,
     action_info: Optional[Dict[str, Any]] = None
 ) -> np.ndarray:
+    """
+    Draw detection boxes, hand landmarks and the activity banner.
+
+    Only hands are skeletonised — there is no body-pose overlay.
+    """
     annotated = frame.copy()
     h, w = annotated.shape[:2]
 
@@ -63,7 +67,8 @@ def draw_perception_overlays(
         # Person bounding box: thinner border
         if raw_lbl == "Person":
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (230, 230, 230), 1)
-            text = f"Astronaut {conf:.2f}"
+            movement_text = action_info.get("movement", "Active") if action_info else "Active"
+            text = f"ASTRONAUT {conf:.2f} // {movement_text.upper()}"
             (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
             cv2.rectangle(annotated, (x1, max(0, y1 - th - 6)), (x1 + tw + 8, y1), (30, 35, 40), -1)
             cv2.putText(annotated, text, (x1 + 4, max(12, y1 - 3)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
@@ -72,9 +77,12 @@ def draw_perception_overlays(
         # Everyday & payload objects: clean rectangular bounding box
         cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, 2)
 
-        # Held tag indicator
-        tag_prefix = "● HELD: " if is_held else ""
-        text = f"{tag_prefix}{label} {conf:.2f}"
+        # Held / independent-motion tags. OpenCV's Hershey fonts have no
+        # glyph for "●", so the annotated stream uses ASCII markers.
+        tag_prefix = "[HELD] " if is_held else ""
+        if det.get("moving") or det.get("is_moving"):
+            tag_prefix += "[MOVE] "
+        text = f"{tag_prefix}{det.get('display_name') or label} {conf:.2f}"
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
 
         # Badge background
@@ -86,76 +94,18 @@ def draw_perception_overlays(
         text_color = (15, 18, 22) if badge_lum > 140 else (250, 250, 250)
         cv2.putText(annotated, text, (x1 + 5, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, text_color, 1, cv2.LINE_AA)
 
-    # 2. Draw MediaPipe Human Pose Skeleton & Joints
-    if pose and pose.get("landmarks"):
-        lms = pose["landmarks"]
-        if len(lms) >= 33:
-            pose_pts = []
-            for lm in lms:
-                px = int(lm["x"] * w)
-                py = int(lm["y"] * h)
-                vis = lm.get("visibility", 1.0)
-                pose_pts.append((px, py, vis))
-
-            connections = [
-                # Torso
-                (11, 12), (11, 23), (12, 24), (23, 24),
-                # Left Arm
-                (11, 13), (13, 15),
-                # Right Arm
-                (12, 14), (14, 16),
-                # Left Leg
-                (23, 25), (25, 27), (27, 29), (29, 31),
-                # Right Leg
-                (24, 26), (26, 28), (28, 30), (30, 32),
-                # Shoulders to head
-                (11, 0), (12, 0)
-            ]
-
-            bone_color = (0, 230, 200)    # Neon Cyan
-            joint_color = (255, 255, 255) # Bright White Core
-
-            # Draw bones
-            for p1, p2 in connections:
-                if pose_pts[p1][2] > 0.25 and pose_pts[p2][2] > 0.25:
-                    pt1 = (pose_pts[p1][0], pose_pts[p1][1])
-                    pt2 = (pose_pts[p2][0], pose_pts[p2][1])
-                    cv2.line(annotated, pt1, pt2, bone_color, 2, cv2.LINE_AA)
-
-            # Draw key joints
-            key_joints = [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]
-            for j in key_joints:
-                if pose_pts[j][2] > 0.25:
-                    jp = (pose_pts[j][0], pose_pts[j][1])
-                    cv2.circle(annotated, jp, 5, bone_color, -1)
-                    cv2.circle(annotated, jp, 2, joint_color, -1)
-
-            # Astronaut Pose HUD Badge
-            head_p = pose_pts[0]
-            if head_p[2] > 0.25:
-                hx, hy = head_p[0], head_p[1]
-                movement_text = action_info.get("movement", "Active") if action_info else "Active"
-                badge_text = f"ASTRONAUT // {movement_text.upper()}"
-                (bw, bh), _ = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
-                bx = max(8, hx - bw // 2)
-                by = max(18, hy - 30)
-                cv2.rectangle(annotated, (bx - 4, by - bh - 4), (bx + bw + 4, by + 4), (15, 20, 25), -1)
-                cv2.rectangle(annotated, (bx - 4, by - bh - 4), (bx + bw + 4, by + 4), (0, 230, 200), 1)
-                cv2.putText(annotated, badge_text, (bx, by), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 230, 200), 1, cv2.LINE_AA)
-
-    # 3. Draw Hand Landmarks
+    # 2. Draw Hand Landmarks & Skeleton
     if hands:
         for hand in hands:
             landmarks = hand.get("landmarks", [])
             side = hand.get("side", "Right")
             h_color = (80, 220, 230) if side == "Right" else (180, 230, 80)
-            
+
             pts = []
             for lm in landmarks:
                 px = int(lm["x"] * w)
                 py = int(lm["y"] * h)
                 pts.append((px, py))
-                cv2.circle(annotated, (px, py), 3, h_color, -1)
 
             if len(pts) >= 21:
                 hand_connections = [
@@ -167,16 +117,29 @@ def draw_perception_overlays(
                     (0, 17)
                 ]
                 for p1, p2 in hand_connections:
-                    cv2.line(annotated, pts[p1], pts[p2], h_color, 1, cv2.LINE_AA)
+                    cv2.line(annotated, pts[p1], pts[p2], h_color, 2, cv2.LINE_AA)
+
+            # Fingertips get a larger marker than the intermediate joints
+            fingertip_ids = {4, 8, 12, 16, 20}
+            for i, (px, py) in enumerate(pts):
+                radius = 5 if i in fingertip_ids else 3
+                cv2.circle(annotated, (px, py), radius, h_color, -1)
+                if i in fingertip_ids:
+                    cv2.circle(annotated, (px, py), 2, (255, 255, 255), -1)
 
             wrist = hand.get("wrist")
             if wrist:
                 wx, wy = int(wrist["x"] * w), int(wrist["y"] * h)
-                hand_text = f"Hand ({side[0]})"
-                cv2.putText(annotated, hand_text, (wx - 25, max(15, wy - 10)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, h_color, 1, cv2.LINE_AA)
+                grip = "GRASP" if hand.get("is_grasping") else ("PINCH" if hand.get("is_pinching") else "OPEN")
+                hand_text = f"{side[0]} Hand // {grip}"
+                (tw, th), _ = cv2.getTextSize(hand_text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+                tx = max(4, wx - tw // 2)
+                ty = max(th + 6, wy - 12)
+                cv2.rectangle(annotated, (tx - 4, ty - th - 4), (tx + tw + 4, ty + 4), (15, 20, 25), -1)
+                cv2.putText(annotated, hand_text, (tx, ty),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, h_color, 1, cv2.LINE_AA)
 
-    # 4. Draw Comprehensive Action & Movement HUD Banner
+    # 3. Draw Comprehensive Action & Movement HUD Banner
     if action_info:
         act_label = action_info.get("label", "Monitoring")
         movement = action_info.get("movement", "Stationary")

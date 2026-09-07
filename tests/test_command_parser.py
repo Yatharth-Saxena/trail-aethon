@@ -1,5 +1,66 @@
 import pytest
-from voice.command_parser.command_parser import command_parser, Intent
+from voice.command_parser.command_parser import (
+    command_parser,
+    Intent,
+    has_wake_word,
+    strip_wake_word,
+    split_wake_command,
+)
+
+
+def test_wake_word_stripping():
+    """The wake phrase must be removed, leaving only the command text."""
+    assert strip_wake_word("hey aethon what's the next step") == "what's the next step"
+    assert strip_wake_word("Hey AETHON, what is the next step") == "what is the next step"
+    assert strip_wake_word("aethon start the experiment") == "start the experiment"
+    assert strip_wake_word("ok aethon pause the experiment") == "pause the experiment"
+
+    # Misheard pronunciations strip just as well.
+    assert strip_wake_word("hey than what am i doing") == "what am i doing"
+    assert strip_wake_word("hetan what color is this") == "what color is this"
+    assert strip_wake_word("ethane than take a snapshot") == "take a snapshot"
+
+    # A bare wake call leaves nothing behind.
+    assert strip_wake_word("hey aethon") == ""
+    assert strip_wake_word("aethon") == ""
+    assert strip_wake_word("hetan") == ""
+
+    # Utterances with no wake word pass through untouched.
+    assert strip_wake_word("what is the next step") == "what is the next step"
+    assert strip_wake_word("") == ""
+
+
+def test_wake_word_gating_contract():
+    """split_wake_command mirrors the frontend gate: (had_wake, command)."""
+    had_wake, command = split_wake_command("hey aethon what's the next step")
+    assert had_wake is True
+    assert command == "what's the next step"
+
+    had_wake, command = split_wake_command("hey aethon")
+    assert had_wake is True
+    assert command == ""
+
+    # Ambient chatter must not open a command session.
+    had_wake, command = split_wake_command("Vikram chai pi li kya")
+    assert had_wake is False
+    assert command == "Vikram chai pi li kya"
+
+    assert not has_wake_word("tell me the next step")
+    assert has_wake_word("hey aethon tell me the next step")
+
+
+def test_stripped_command_still_parses_to_intent():
+    """Stripping the wake word must not change the recognised intent."""
+    pairs = [
+        ("hey aethon what's the next step", Intent.NEXT_STEP),
+        ("hey aethon start the experiment", Intent.START_EXPERIMENT),
+        ("aethon what am i doing", Intent.WHAT_AM_I_DOING),
+        ("hetan what color is this", Intent.IDENTIFY_COLOR),
+        ("ethane than take a snapshot", Intent.SNAPSHOT),
+    ]
+    for utterance, expected in pairs:
+        assert command_parser.parse(utterance) == expected
+        assert command_parser.parse(strip_wake_word(utterance)) == expected
 
 def test_command_variations():
     assert command_parser.parse("Start the experiment") == Intent.START_EXPERIMENT

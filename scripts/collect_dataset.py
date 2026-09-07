@@ -2,6 +2,13 @@
 AETHON - Dataset Collection Utility
 Usage: python scripts/collect_dataset.py
 Captures images from webcam for custom detector fine-tuning.
+
+Captured frames land in dataset/images/ and the class list in
+dataset/classes.txt. After annotating them into dataset/labels/, run
+scripts/train_detector.py — it writes models/object_detector/weights.pt,
+which the perception pipeline loads automatically in preference to the stock
+yolov8n.pt (see CUSTOM_DETECTOR_WEIGHTS in backend/config.py).
+
 Hotkeys:
   [a] - Capture Object A (Red block)
   [b] - Capture Object B (Wooden block)
@@ -11,12 +18,17 @@ Hotkeys:
   [s] - General Scene snapshot
   [q] - Quit
 """
-import cv2
+import sys
 import time
-import os
 from pathlib import Path
 
-DATASET_DIR = Path(__file__).resolve().parent.parent / "dataset"
+import cv2
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR))
+
+from backend.config import DATASET_DIR  # noqa: E402
+
 IMAGES_DIR = DATASET_DIR / "images"
 LABELS_DIR = DATASET_DIR / "labels"
 CLASSES_FILE = DATASET_DIR / "classes.txt"
