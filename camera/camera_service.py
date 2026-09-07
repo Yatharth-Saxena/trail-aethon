@@ -62,26 +62,51 @@ class CameraService:
                 except Exception:
                     pass
             try:
-                # Try DirectShow first
-                cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-                if cap.isOpened():
+                import platform
+                system = platform.system()
+                cap = None
+                
+                # Try platform-optimized backend first
+                if system == "Darwin":
+                    cap = cv2.VideoCapture(self.camera_index, cv2.CAP_AVFOUNDATION)
+                elif system == "Windows":
+                    cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+                elif system == "Linux":
+                    cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
+                
+                # Fallback to default backend if platform-specific backend didn't open
+                if cap is None or not cap.isOpened():
+                    if cap is not None:
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                    cap = cv2.VideoCapture(self.camera_index)
+
+                if cap is not None and cap.isOpened():
                     cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
                     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
                     cap.set(cv2.CAP_PROP_FPS, self.target_fps)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     ret, _ = cap.read()
-                    if not ret:
-                        # Fallback to default backend if DSHOW frame read fails
+                    if ret:
+                        self.cap = cap
+                        print(f"[CameraService] Hardware camera {self.camera_index} initialized successfully.")
+                    else:
                         cap.release()
-                        cap = cv2.VideoCapture(self.camera_index)
+                        self.cap = None
+                        print(f"[CameraService] Camera {self.camera_index} opened but could not read frame. Using standby/browser stream.")
                 else:
-                    cap = cv2.VideoCapture(self.camera_index)
-                
-                if cap.isOpened():
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                self.cap = cap
+                    if cap is not None:
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
+                    self.cap = None
+                    print(f"[CameraService] No physical camera found at index {self.camera_index}. Standby & browser webcam stream active.")
             except Exception as e:
-                print(f"[CameraService Error] Failed to open camera {self.camera_index}: {e}")
+                print(f"[CameraService Warning] Camera {self.camera_index} probe: {e}")
+                self.cap = None
 
     def inject_client_frame(self, frame: np.ndarray):
         """Receives a frame sent by browser webcam and injects it into the perception pipeline."""
@@ -100,6 +125,7 @@ class CameraService:
     def _hw_capture_loop(self):
         """Continuously reads from physical webcam at hardware rate so driver buffer never stalls."""
         failed_count = 0
+        last_retry = 0.0
         while self.is_running:
             with self.lock:
                 cap = self.cap
@@ -120,13 +146,15 @@ class CameraService:
                             self._hw_timestamp = time.time()
                 else:
                     failed_count += 1
-                    if failed_count > 40:
-                        # Reinitialize camera if read fails repeatedly
+                    if failed_count > 30:
                         failed_count = 0
-                        self._init_camera()
+                        now = time.time()
+                        if now - last_retry > 10.0:
+                            last_retry = now
+                            self._init_camera()
                     time.sleep(0.01)
             else:
-                time.sleep(0.05)
+                time.sleep(0.2)
 
     def switch_camera(self, new_index: int) -> Dict[str, Any]:
         self.camera_index = int(new_index)

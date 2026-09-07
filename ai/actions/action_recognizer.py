@@ -137,7 +137,21 @@ class ActionRecognizer:
                         movement_label = f"Waving {elevated_arm_side} Hand"
 
         # 2. Match Hands with Objects (Verified Holding & Grasp Detection)
+
+        if not hands and pose:
+            # Emulate hand positions from wrists if Hand Tracking is disabled
+            for side, w_key in [("Left", "left_wrist"), ("Right", "right_wrist")]:
+                wrist = pose.get(w_key)
+                if wrist:
+                    wx, wy = wrist["x"] * 1280, wrist["y"] * 720
+                    hands.append({
+                        "side": side,
+                        "bbox": [wx - 25, wy - 25, wx + 25, wy + 25],
+                        "is_pinching": False
+                    })
+
         held_object = None
+
         holding_hand_side = "Right"
 
         for hnd in hands:

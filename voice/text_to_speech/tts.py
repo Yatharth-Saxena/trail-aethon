@@ -1,41 +1,54 @@
-import pyttsx3
+import subprocess
+import platform
 import threading
 import queue
-import time
 from typing import Optional
 
+# Phonetic normalization for natural speech
+PHONETIC_MAP = {
+    "AETHON": "Aython",
+    "Aethon": "Aython",
+    "aethon": "Aython",
+}
+
+def _normalize_for_speech(text: str) -> str:
+    for key, val in PHONETIC_MAP.items():
+        text = text.replace(key, val)
+    return text
+
 class TextToSpeechService:
-    def __init__(self, rate: int = 165, volume: float = 0.95):
+    """
+    Dedicated background TTS service.
+    Muted by default to avoid duplicating the browser's high-quality female speech synthesis.
+    """
+    def __init__(self, rate: int = 175, female_voice: str = "Samantha"):
         self.rate = rate
-        self.volume = volume
-        self.queue = queue.Queue()
+        self.voice = female_voice
+        self.queue: queue.Queue = queue.Queue()
         self.is_running = True
-        self.muted = False
+        self.muted = True  # Muted by default: browser client plays natural female voice without echo
         self.is_speaking = False
+        self._current_proc: Optional[subprocess.Popen] = None
+        self._proc_lock = threading.Lock()
         self.worker_thread = threading.Thread(target=self._worker, daemon=True)
         self.worker_thread.start()
 
     def _worker(self):
-        try:
-            import pythoncom
-            pythoncom.CoInitialize()
-        except Exception:
-            pass
+        system = platform.system()
         engine = None
-        try:
-            engine = pyttsx3.init()
-            engine.setProperty('rate', self.rate)
-            engine.setProperty('volume', self.volume)
-            # Pick a natural voice if available
-            voices = engine.getProperty('voices')
-            if voices:
-                # Prefer English female voice (Microsoft Zira)
-                for v in voices:
-                    if "zira" in v.name.lower():
-                        engine.setProperty('voice', v.id)
-                        break
-        except Exception as e:
-            print(f"[TTS Worker Warning] Engine init warning: {e}")
+        if system != "Darwin":
+            try:
+                import pyttsx3
+                engine = pyttsx3.init()
+                engine.setProperty('rate', self.rate)
+                voices = engine.getProperty('voices')
+                if voices:
+                    for v in voices:
+                        if "zira" in v.name.lower() or "female" in v.name.lower():
+                            engine.setProperty('voice', v.id)
+                            break
+            except Exception:
+                engine = None
 
         while self.is_running:
             try:
@@ -43,25 +56,35 @@ class TextToSpeechService:
                 if text is None:
                     break
                 if not self.muted and text.strip():
-                    if engine:
+                    self.is_speaking = True
+                    norm_text = _normalize_for_speech(text)
+                    if system == "Darwin":
                         try:
-                            self.is_speaking = True
-                            engine.say(text)
-                            engine.runAndWait()
-                        except Exception as e:
-                            print(f"[TTS Error] Engine playback error: {e}")
-                            # Re-initialize engine if it got stuck
-                            try:
-                                engine = pyttsx3.init()
-                            except Exception:
-                                pass
+                            proc = subprocess.Popen(
+                                ["say", "-v", self.voice, "-r", str(self.rate), norm_text],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL
+                            )
+                            with self._proc_lock:
+                                self._current_proc = proc
+                            proc.wait()
+                        except Exception:
+                            pass
                         finally:
-                            self.is_speaking = False
+                            with self._proc_lock:
+                                self._current_proc = None
+                    elif engine:
+                        try:
+                            engine.say(norm_text)
+                            engine.runAndWait()
+                        except Exception:
+                            pass
                 self.queue.task_done()
             except queue.Empty:
                 continue
             except Exception as e:
                 print(f"[TTS Loop Error] {e}")
+            finally:
                 self.is_speaking = False
 
     @property
@@ -71,18 +94,30 @@ class TextToSpeechService:
     def speak(self, text: str):
         if not text or self.muted:
             return
-        # Avoid queuing huge backlogs of repetitive messages
-        if self.queue.qsize() > 2:
-            try:
-                while not self.queue.empty():
-                    self.queue.get_nowait()
-                    self.queue.task_done()
-            except Exception:
-                pass
+        # Interrupt previous output
+        with self._proc_lock:
+            if self._current_proc and self._current_proc.poll() is None:
+                try:
+                    self._current_proc.terminate()
+                except Exception:
+                    pass
+        # Clear backlog
+        try:
+            while not self.queue.empty():
+                self.queue.get_nowait()
+                self.queue.task_done()
+        except Exception:
+            pass
         self.queue.put(text)
 
     def stop(self):
         self.is_running = False
+        with self._proc_lock:
+            if self._current_proc and self._current_proc.poll() is None:
+                try:
+                    self._current_proc.terminate()
+                except Exception:
+                    pass
         self.queue.put(None)
 
 # Singleton instance

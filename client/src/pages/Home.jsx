@@ -319,8 +319,8 @@ export default function Home() {
                       for (const [p1, p2] of connections) {
                         if (lms[p1] && lms[p2] && (lms[p1].visibility ?? 1) > 0.25 && (lms[p2].visibility ?? 1) > 0.25) {
                           ctx.beginPath();
-                          ctx.moveTo(lms[p1].x * scaleX, lms[p1].y * scaleY);
-                          ctx.lineTo(lms[p2].x * scaleX, lms[p2].y * scaleY);
+                          ctx.moveTo(lms[p1].x * cw, lms[p1].y * ch);
+                          ctx.lineTo(lms[p2].x * cw, lms[p2].y * ch);
                           ctx.stroke();
                         }
                       }
@@ -329,7 +329,7 @@ export default function Home() {
                         if ((lm.visibility ?? 1) > 0.25) {
                           ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
                           ctx.beginPath();
-                          ctx.arc(lm.x * scaleX, lm.y * scaleY, 3, 0, Math.PI * 2);
+                          ctx.arc(lm.x * cw, lm.y * ch, 3, 0, Math.PI * 2);
                           ctx.fill();
                         }
                       }
@@ -464,7 +464,7 @@ export default function Home() {
   const [voiceMode, setVoiceMode] = useState(true);
   const [assistantDraft, setAssistantDraft] = useState("");
   const [isListening, setIsListening] = useState(false);
-  const [continuousListening, setContinuousListening] = useState(true);
+  const [continuousListening, setContinuousListening] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState("idle"); // "idle" | "listening" | "processing" | "wake_detected"
   const [liveTranscript, setLiveTranscript] = useState("");
   const [audioRecording, setAudioRecording] = useState(false);
@@ -577,95 +577,125 @@ export default function Home() {
     }
   }, []);
 
-  // Select the highest-quality natural neural voice (Microsoft Aria/Jenny Online Natural, Google US English, Samantha, etc.)
+  // Select high-quality natural female voice (Samantha on macOS, Google US English, Microsoft Aria/Jenny Online Natural)
   const getPreferredVoice = useCallback(() => {
     let list = (voicesRef.current && voicesRef.current.length > 0)
       ? voicesRef.current
       : (typeof window !== "undefined" && "speechSynthesis" in window ? window.speechSynthesis.getVoices() : []);
     if (!list || list.length === 0) return null;
 
-    // 1. Microsoft Natural online female voices (Edge: Aria, Jenny, Swara, Neerja, Ava, Emma)
-    const msNaturalFemale = list.find(v =>
-      (v.name.includes("Natural") || v.name.includes("Neural") || v.name.includes("Online")) &&
-      (v.name.includes("Aria") || v.name.includes("Jenny") || v.name.includes("Ava") || v.name.includes("Emma") || v.name.includes("Swara") || v.name.includes("Neerja") || !v.name.toLowerCase().includes("guy"))
+    // 1. macOS / iOS standard & enhanced natural female voices (Samantha, Karen, Victoria, Ava, Allison, Susan)
+    const macFemale = list.find(v => {
+      const name = v.name.toLowerCase();
+      return (
+        name.includes("samantha") ||
+        name.includes("karen") ||
+        name.includes("victoria") ||
+        name.includes("tessa") ||
+        name.includes("moira") ||
+        name.includes("fiona") ||
+        name.includes("allison") ||
+        name.includes("susan")
+      );
+    });
+    if (macFemale) return macFemale;
+
+    // 2. Google Chrome Natural Female voices
+    const googleFemale = list.find(v =>
+      v.name === "Google US English" ||
+      v.name === "Google UK English Female" ||
+      (v.name.includes("Google") && (v.name.includes("Female") || !v.name.toLowerCase().includes("male")))
     );
+    if (googleFemale) return googleFemale;
+
+    // 3. Microsoft Natural / Neural online female voices (Edge: Aria, Jenny, Swara, Neerja, Ava, Emma)
+    const msNaturalFemale = list.find(v => {
+      const name = v.name.toLowerCase();
+      const isNeural = name.includes("natural") || name.includes("neural") || name.includes("online");
+      const isFemaleName = name.includes("aria") || name.includes("jenny") || name.includes("ava") ||
+                           name.includes("emma") || name.includes("swara") || name.includes("neerja") ||
+                           name.includes("zira");
+      return (isNeural && isFemaleName) || (isNeural && !name.includes("guy") && !name.includes("david") && !name.includes("mark"));
+    });
     if (msNaturalFemale) return msNaturalFemale;
 
-    // 2. Any Microsoft Natural / Neural voice
-    const anyNatural = list.find(v =>
-      (v.name.includes("Natural") || v.name.includes("Neural")) && !v.name.toLowerCase().includes("david")
-    );
-    if (anyNatural) return anyNatural;
+    // 4. Any English voice with female naming
+    const anyFemaleEnglish = list.find(v => {
+      const name = v.name.toLowerCase();
+      return (
+        (v.lang && v.lang.startsWith("en")) &&
+        (name.includes("female") || name.includes("zira") || name.includes("samantha") || name.includes("swara") || name.includes("karen")) &&
+        !name.includes("male") && !name.includes("david") && !name.includes("mark") && !name.includes("george")
+      );
+    });
+    if (anyFemaleEnglish) return anyFemaleEnglish;
 
-    // 3. Google US English (Standard Chrome natural female voice)
-    const googleUs = list.find(v => v.name === "Google US English");
-    if (googleUs) return googleUs;
-
-    // 4. Google UK English Female
-    const googleUk = list.find(v => v.name === "Google UK English Female");
-    if (googleUk) return googleUk;
-
-    // 5. Any Google female / neural voice
-    const anyGoogleFemale = list.find(v => v.name.includes("Google") && !v.name.toLowerCase().includes("male"));
-    if (anyGoogleFemale) return anyGoogleFemale;
-
-    // 6. Samantha (macOS default natural female voice)
-    const samantha = list.find(v => v.name.includes("Samantha"));
-    if (samantha) return samantha;
-
-    // 7. Indian English or Hindi female voice (Swara, Kalpana, Neerja)
-    const inFemale = list.find(v =>
-      v.name.toLowerCase().includes("swara") ||
-      v.name.toLowerCase().includes("neerja") ||
-      v.name.toLowerCase().includes("kalpana") ||
-      v.lang.startsWith("hi") ||
-      v.lang.startsWith("en-IN")
-    );
-    if (inFemale) return inFemale;
-
-    // 8. Any English voice that is not David or Zira
-    const anyCleanEnglish = list.find(v =>
-      v.lang && v.lang.startsWith("en") &&
-      !v.name.toLowerCase().includes("david") &&
-      !v.name.toLowerCase().includes("zira") &&
-      !v.name.toLowerCase().includes("mark")
-    );
-    if (anyCleanEnglish) return anyCleanEnglish;
-
-    // 9. Any non-David voice
-    const anyNonDavid = list.find(v => !v.name.toLowerCase().includes("david"));
-    return anyNonDavid || list[0];
+    // 5. General non-male voice fallback
+    const nonMale = list.find(v => {
+      const name = v.name.toLowerCase();
+      return (
+        (v.lang && v.lang.startsWith("en")) &&
+        !name.includes("david") &&
+        !name.includes("mark") &&
+        !name.includes("george") &&
+        !name.includes("richard") &&
+        !name.includes("alex") &&
+        !name.includes("fred") &&
+        !name.includes("guy") &&
+        !name.includes("male")
+      );
+    });
+    return nonMale || list[0];
   }, []);
 
   const lastSpokenIdRef = useRef(1); // 1 is initial welcome message
+  const lastSpokenTextRef = useRef("");
+  const lastSpokenTimeRef = useRef(0);
 
   const speakAssistantResponse = useCallback((text, msgId = null) => {
     if (!text || !voiceModeRef.current) return;
+    const clean = text
+      .replace(/[*_#`~[\]()]/g, " ")
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!clean) return;
+
+    const now = Date.now();
+
+    // Deduplication check 1: Exact message ID match
     if (msgId !== null && msgId !== undefined) {
       if (lastSpokenIdRef.current >= msgId) return;
       lastSpokenIdRef.current = msgId;
     }
-    lastWakeTimeRef.current = Date.now();
+
+    // Deduplication check 2: Temporal identical utterance suppression (prevents double-playback within 4s)
+    if (
+      clean.toLowerCase() === lastSpokenTextRef.current.toLowerCase() &&
+      (now - lastSpokenTimeRef.current) < 4000
+    ) {
+      return;
+    }
+
+    lastSpokenTextRef.current = clean;
+    lastSpokenTimeRef.current = now;
+    lastWakeTimeRef.current = now;
+
     try {
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         if (window.speechSynthesis.paused) {
           try { window.speechSynthesis.resume(); } catch (e) {}
         }
+        // Cancel any previous utterance to avoid talking over itself
         window.speechSynthesis.cancel();
-        const clean = text
-          .replace(/[*_#`~[\]()]/g, " ")
-          .replace(/https?:\/\/\S+/g, "")
-          .replace(/\s+/g, " ")
-          .trim();
-        if (!clean) return;
 
         const utter = new SpeechSynthesisUtterance(clean);
-        utter.rate = 1.02;
-        utter.pitch = 1.0;
+        utter.rate = 1.0;
+        utter.pitch = 1.02;
         const voice = getPreferredVoice();
         if (voice) utter.voice = voice;
 
-        // Wave animation starts when AETHON is active/speaking
+        // Wave animation starts when AETHON speaks
         setIsAssistantActive(true);
         if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
         const estDuration = Math.max(3000, clean.length * 90);
@@ -1103,7 +1133,7 @@ export default function Home() {
   const handleMicClick = async () => {
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    // If currently recording via AudioRecorder, stop and upload
+    // If currently recording via fallback AudioRecorder, stop and upload
     if (audioRecording && audioRecorderRef.current) {
       try {
         const blob = audioRecorderRef.current.stop();
@@ -1119,112 +1149,32 @@ export default function Home() {
       return;
     }
 
-    // If already actively capturing speech in manual mode, stop and process
-    if (isListening && !continuousListening) {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch (e) {}
-      }
-      setIsListening(false);
-      setVoiceStatus("idle");
-      setLiveTranscript("");
-      return;
-    }
-
-    // Actively wake AETHON and open the conversation window
-    lastWakeTimeRef.current = Date.now();
-    setIsAssistantActive(true);
-    setIsListening(true);
-    setVoiceStatus("listening");
-    setLiveTranscript("");
-
     if (SpeechRec) {
-      try {
-        const recognition = new SpeechRec();
-        recognition.lang = "en-US";
-        recognition.interimResults = true;
-        recognition.maxAlternatives = 1;
-        recognitionRef.current = recognition;
-
-        recognition.onresult = (event) => {
-          let interim = "";
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            const transcript = event.results[i][0].transcript;
-            if (event.results[i].isFinal) {
-              setLiveTranscript("");
-              setIsListening(false);
-              setVoiceStatus("processing");
-              const { command } = stripWakeWord(transcript);
-              const toSend = command || transcript;
-              if (toSend) {
-                sendCommand(toSend);
-              }
-              setTimeout(() => setVoiceStatus("idle"), 1200);
-              return;
-            } else {
-              interim += transcript;
-            }
-          }
-          if (interim) {
-            setLiveTranscript(interim);
-          }
-        };
-
-        recognition.onerror = async (e) => {
-          console.warn("[PushToTalk SpeechRecognition Error]", e.error);
-          if (e.error === "network") {
-            try {
-              const rec = new AudioRecorder();
-              await rec.start();
-              audioRecorderRef.current = rec;
-              setAudioRecording(true);
-              setVoiceStatus("listening");
-              return;
-            } catch (recErr) {
-              console.error("[Fallback Mic Error]", recErr);
-            }
-          }
-          setIsListening(false);
-          setVoiceStatus("idle");
-          setLiveTranscript("");
-        };
-
-        recognition.onend = () => {
-          if (!audioRecording) {
-            setIsListening(false);
-            setVoiceStatus("idle");
-          }
-          if (continuousListeningRef.current) {
-            setTimeout(() => {
-              if (continuousListeningRef.current) {
-                startContinuousListening();
-              }
-            }, 600);
-          }
-        };
-
-        recognition.start();
-      } catch (err) {
-        console.error("[Speech Start Error]", err);
-        try {
-          const rec = new AudioRecorder();
-          await rec.start();
-          audioRecorderRef.current = rec;
-          setAudioRecording(true);
-        } catch (recErr) {
-          setIsListening(false);
-          setVoiceStatus("idle");
-        }
+      // Toggle Continuous Listening
+      const newState = !continuousListening;
+      setContinuousListening(newState);
+      
+      if (newState) {
+        lastWakeTimeRef.current = Date.now();
+        setIsAssistantActive(true);
+        setLiveTranscript("");
+      } else {
+        setIsListening(false);
+        setVoiceStatus("idle");
+        setLiveTranscript("");
       }
     } else {
+      // Fallback manual Push-To-Talk
       try {
         const rec = new AudioRecorder();
         await rec.start();
         audioRecorderRef.current = rec;
         setAudioRecording(true);
-      } catch (err) {
+        setVoiceStatus("listening");
+      } catch (recErr) {
+        console.error("[Fallback Mic Error]", recErr);
         alert("Microphone access could not be initialized. Please check browser permissions.");
         setIsListening(false);
-        setVoiceStatus("idle");
       }
     }
   };

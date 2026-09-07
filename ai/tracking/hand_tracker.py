@@ -6,15 +6,27 @@ from typing import List, Dict, Any, Optional
 
 class HandTracker:
     def __init__(self):
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=2,
-            min_detection_confidence=0.35,
-            min_tracking_confidence=0.35
-        )
+        self.mp_hands = None
+        self.hands = None
+        if hasattr(mp, "solutions") and hasattr(mp.solutions, "hands"):
+            try:
+                self.mp_hands = mp.solutions.hands
+                self.hands = self.mp_hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=2,
+                    min_detection_confidence=0.35,
+                    min_tracking_confidence=0.35
+                )
+            except Exception as e:
+                print(f"[HandTracker Warning] Could not init mediapipe hands: {e}")
+                self.hands = None
+        else:
+            print("[HandTracker Info] MediaPipe solutions.hands not available in current environment; running in fallback mode.")
 
     def process(self, frame_bgr: np.ndarray) -> List[Dict[str, Any]]:
+        if self.hands is None:
+            return []
+
         h, w = frame_bgr.shape[:2]
         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         results = self.hands.process(frame_rgb)

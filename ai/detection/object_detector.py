@@ -320,316 +320,33 @@ class CustomObjectDetector:
                                 if is_in_torso(bcx, bcy) and not is_near_hand(bcx, bcy):
                                     continue
                                 color_info = extract_dominant_color(frame, xyxy)
+                                
+                                exp_label = label
+                                cname = color_info["name"]
+                                if cname == "Red":
+                                    exp_label = "Object A"
+                                elif cname in ["Blue", "Brown / Wood"]:
+                                    exp_label = "Object B"
+                                elif cname in ["Purple", "Silver / Gray"]:
+                                    exp_label = "Tray"
+                                elif cname in ["Yellow", "Orange"]:
+                                    exp_label = "Complete Button"
+                                elif label in ["Cup", "Bottle"] and not any(d["label"] == "Object A" for d in detections):
+                                    exp_label = "Object A" # Fallback mapping
+
                                 detections.append(
                                     DetectedObject(
-                                        label=label,
+                                        label=exp_label,
                                         confidence=conf,
                                         bbox=xyxy,
-                                        color=color_info["name"],
+                                        color=cname,
                                         color_hex=color_info["hex"]
                                     ).to_dict()
                                 )
             except Exception:
                 pass
 
-        # 3. Specialized BAS Payload Objects (Block A, Block B, Tray, Button)
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-        # -------------------------------------------------------------
-        # Object A: Red Payload Block  (TIGHTENED)
-        # -------------------------------------------------------------
-        lower_red1 = np.array([0, 160, 110])
-        upper_red1 = np.array([7, 255, 255])
-        lower_red2 = np.array([173, 160, 110])
-        upper_red2 = np.array([180, 255, 255])
-
-        mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
-        red_mask = cv2.bitwise_or(mask1, mask2)
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-
-        contours_a, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best_cand_a = None
-        best_score_a = 0.0
-
-        for c in contours_a:
-            area = cv2.contourArea(c)
-            rx, ry, rw, rh = cv2.boundingRect(c)
-            cx, cy = rx + rw // 2, ry + rh // 2
-
-            in_hand = is_near_hand(cx, cy)
-            min_area = 550 if in_hand else 800
-            if area < min_area or area > 7000:
-                continue
-
-            # Torso rejection: if on torso and not held by hand, reject (it's clothing)
-            if is_in_torso(cx, cy) and not in_hand:
-                continue
-
-            # Spatial reach: if not in hand, must be on lower table surface within operator corridor
-            if not in_hand:
-                if cy < h * 0.58:  # Above desk level -> background/wall/curtains/posters
-                    continue
-                if abs(cx - pcx) > pw * 0.65:  # Outside operator reach corridor -> reject
-                    continue
-
-            # Geometric check: solidity, extent, aspect ratio (TIGHTENED)
-            hull = cv2.convexHull(c)
-            hull_area = cv2.contourArea(hull)
-            if hull_area <= 0:
-                continue
-            solidity = area / hull_area
-            extent = area / float(rw * rh)
-            aspect = rw / float(max(1, rh))
-
-            if solidity < 0.86 or extent < 0.65 or not (0.60 <= aspect <= 1.65):
-                continue
-
-            # BGR color purity verification (TIGHTENED)
-            roi = frame[ry:ry+rh, rx:rx+rw]
-            if roi.size == 0:
-                continue
-            mean_b = float(np.mean(roi[:, :, 0]))
-            mean_g = float(np.mean(roi[:, :, 1]))
-            mean_r = float(np.mean(roi[:, :, 2]))
-            if not (mean_r > 1.50 * mean_g and mean_r > 1.50 * mean_b and mean_r > 100):
-                continue
-
-            score = solidity * 0.4 + extent * 0.4 + (1.0 if in_hand else 0.5) * 0.2
-            if score > best_score_a:
-                best_score_a = score
-                conf = round(min(0.96, 0.85 + (area / 7000.0) * 0.11), 2)
-                best_cand_a = DetectedObject(
-                    label="Object A",
-                    confidence=conf,
-                    bbox=[rx, ry, rx + rw, ry + rh],
-                    color="Red",
-                    color_hex="#ef4444"
-                ).to_dict()
-
-        if best_cand_a:
-            if self._confirm_label("Object A"):
-                detections.append(best_cand_a)
-            else:
-                # Still accumulating confirmation frames – don't emit yet
-                pass
-        else:
-            # Object A not seen this frame → reset streak
-            self._label_streak["Object A"] = 0
-
-        # -------------------------------------------------------------
-        # Object B: Blue Assembly Block  (TIGHTENED — Wood fallback removed)
-        # -------------------------------------------------------------
-        lower_blue = np.array([100, 130, 90])
-        upper_blue = np.array([126, 255, 255])
-        blue_mask = cv2.inRange(hsv, lower_blue, upper_blue)
-        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        blue_mask = cv2.morphologyEx(blue_mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
-        contours_b, _ = cv2.findContours(blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        found_b = False
-        for c in contours_b:
-            area = cv2.contourArea(c)
-            bx, by, bw, bh = cv2.boundingRect(c)
-            cx, cy = bx + bw // 2, by + bh // 2
-            in_hand = is_near_hand(cx, cy)
-            min_area = 600 if in_hand else 800
-            if area < min_area or area > 7000:
-                continue
-            if is_in_torso(cx, cy) and not in_hand:
-                continue
-            if not in_hand and (cy < h * 0.58 or abs(cx - pcx) > pw * 0.65):
-                continue
-
-            # Ensure not inside a detected Laptop screen or background monitor
-            inside_laptop = False
-            for det in detections:
-                if det.get("raw_label") == "Laptop":
-                    lb = det.get("bbox", [])
-                    if lb and lb[0] <= cx <= lb[2] and lb[1] <= cy <= lb[3]:
-                        inside_laptop = True
-                        break
-            if inside_laptop and not in_hand:
-                continue
-
-            hull = cv2.convexHull(c)
-            solidity = area / max(1, cv2.contourArea(hull))
-            extent = area / float(bw * bh)
-            aspect = bw / float(max(1, bh))
-            if solidity >= 0.88 and extent >= 0.65 and (0.60 <= aspect <= 1.65):
-                # BGR color purity check for blue dominance
-                roi_b = frame[by:by+bh, bx:bx+bw]
-                if roi_b.size > 0:
-                    mean_b_ch = float(np.mean(roi_b[:, :, 0]))
-                    mean_g_ch = float(np.mean(roi_b[:, :, 1]))
-                    mean_r_ch = float(np.mean(roi_b[:, :, 2]))
-                    if not (mean_b_ch > mean_r_ch * 1.15 and mean_b_ch > mean_g_ch * 1.05 and mean_b_ch > 70):
-                        continue
-
-                if self._confirm_label("Object B"):
-                    detections.append(
-                        DetectedObject(
-                            label="Object B",
-                            confidence=0.92,
-                            bbox=[bx, by, bx + bw, by + bh],
-                            color="Blue",
-                            color_hex="#3b82f6"
-                        ).to_dict()
-                    )
-                found_b = True
-                break
-
-        if not found_b:
-            # Fallback to Wooden Block (with strict human skin exclusion)
-            lower_wood = np.array([14, 95, 80])
-            upper_wood = np.array([23, 180, 190])
-            wood_mask = cv2.inRange(hsv, lower_wood, upper_wood)
-            wood_mask = cv2.morphologyEx(wood_mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-            contours_wb, _ = cv2.findContours(wood_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours_wb:
-                area = cv2.contourArea(c)
-                bx, by, bw, bh = cv2.boundingRect(c)
-                cx, cy = bx + bw // 2, by + bh // 2
-                in_hand = is_near_hand(cx, cy)
-                min_area = 700 if in_hand else 900
-                if area < min_area or area > 5500:
-                    continue
-                # Strict: cannot be inside torso, head, or arms
-                if is_in_torso(cx, cy):
-                    continue
-                if not in_hand and (cy < h * 0.58 or abs(cx - pcx) > pw * 0.65):
-                    continue
-                hull = cv2.convexHull(c)
-                solidity = area / max(1, cv2.contourArea(hull))
-                extent = area / float(bw * bh)
-                aspect = bw / float(max(1, bh))
-                if solidity >= 0.90 and extent >= 0.70 and (0.70 <= aspect <= 1.45):
-                    if self._confirm_label("Object B"):
-                        detections.append(
-                            DetectedObject(
-                                label="Object B",
-                                confidence=0.90,
-                                bbox=[bx, by, bx + bw, by + bh],
-                                color="Brown / Wood",
-                                color_hex="#9c6b4e"
-                            ).to_dict()
-                        )
-                    found_b = True
-                    break
-
-        if not found_b:
-            self._label_streak["Object B"] = 0
-
-        # -------------------------------------------------------------
-        # Tray: Distinct Assembly Container on Table Surface  (TIGHTENED)
-        # -------------------------------------------------------------
-        lower_tray_purple = np.array([128, 70, 55])
-        upper_tray_purple = np.array([165, 255, 225])
-        tray_mask = cv2.inRange(hsv, lower_tray_purple, upper_tray_purple)
-        tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
-        contours_tray, _ = cv2.findContours(tray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        found_tray = False
-        for c in contours_tray:
-            area = cv2.contourArea(c)
-            if area < 5000 or area > 30000:
-                continue
-            tx, ty, tw, th = cv2.boundingRect(c)
-            tcx, tcy = tx + tw // 2, ty + th // 2
-            if ty < h * 0.55:  # Must be on lower workspace desk
-                continue
-            if abs(tcx - pcx) > pw * 0.80:  # Must be in front of astronaut
-                continue
-            if is_in_torso(tcx, tcy):
-                continue
-            aspect = tw / float(max(1, th))
-            if not (1.5 <= aspect <= 3.2):
-                continue
-            hull = cv2.convexHull(c)
-            solidity = area / max(1, cv2.contourArea(hull))
-            extent = area / float(tw * th)
-            if solidity >= 0.86 and extent >= 0.62:
-                # BGR color purity: ensure purple tint (blue > red > green)
-                roi_t = frame[ty:ty+th, tx:tx+tw]
-                if roi_t.size > 0:
-                    mean_b_t = float(np.mean(roi_t[:, :, 0]))
-                    mean_g_t = float(np.mean(roi_t[:, :, 1]))
-                    mean_r_t = float(np.mean(roi_t[:, :, 2]))
-                    # Purple should have meaningful blue channel
-                    if mean_b_t < 40 and mean_r_t < 40:
-                        continue
-
-                if self._confirm_label("Tray"):
-                    detections.append(
-                        DetectedObject(
-                            label="Tray",
-                            confidence=0.90,
-                            bbox=[tx, ty, tx + tw, ty + th],
-                            color="Purple",
-                            color_hex="#a855f7"
-                        ).to_dict()
-                    )
-                found_tray = True
-                break
-
-        if not found_tray:
-            self._label_streak["Tray"] = 0
-
-        # -------------------------------------------------------------
-        # Complete Button: Yellow Console Button  (TIGHTENED)
-        # -------------------------------------------------------------
-        lower_btn = np.array([24, 150, 140])
-        upper_btn = np.array([35, 255, 255])
-        btn_mask = cv2.inRange(hsv, lower_btn, upper_btn)
-        btn_mask = cv2.morphologyEx(btn_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-        contours_btn, _ = cv2.findContours(btn_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        found_btn = False
-        for c in contours_btn:
-            area = cv2.contourArea(c)
-            if area < 500 or area > 4000:
-                continue
-            bx, by, bw, bh = cv2.boundingRect(c)
-            bcx, bcy = bx + bw // 2, by + bh // 2
-            if is_in_torso(bcx, bcy):
-                continue
-            if bcy < h * 0.52:  # Must be on lower workstation console
-                continue
-            if abs(bcx - pcx) > pw * 0.80:
-                continue
-            aspect = bw / float(max(1, bh))
-            if not (0.75 <= aspect <= 1.30):
-                continue
-            hull = cv2.convexHull(c)
-            solidity = area / max(1, cv2.contourArea(hull))
-            extent = area / float(bw * bh)
-            if solidity >= 0.87 and extent >= 0.65:
-                # BGR purity: yellow should have high R+G, low B
-                roi_btn = frame[by:by+bh, bx:bx+bw]
-                if roi_btn.size > 0:
-                    mean_b_btn = float(np.mean(roi_btn[:, :, 0]))
-                    mean_g_btn = float(np.mean(roi_btn[:, :, 1]))
-                    mean_r_btn = float(np.mean(roi_btn[:, :, 2]))
-                    if not (mean_r_btn > 100 and mean_g_btn > 100 and mean_b_btn < mean_r_btn * 0.7):
-                        continue
-
-                if self._confirm_label("Complete Button"):
-                    detections.append(
-                        DetectedObject(
-                            label="Complete Button",
-                            confidence=0.92,
-                            bbox=[bx, by, bx + bw, by + bh],
-                            color="Yellow",
-                            color_hex="#eab308"
-                        ).to_dict()
-                    )
-                found_btn = True
-                break
-
-        if not found_btn:
-            self._label_streak["Complete Button"] = 0
-
+        # 3. Custom HSV checks removed in favor of YOLO mapping
         # 4. Remove duplicate/overlapping bounding boxes (IoU > 0.45)
         return self._nms(detections, iou_thresh=0.45)
 
@@ -646,8 +363,7 @@ class CustomObjectDetector:
             overlap = False
             for kept in keep:
                 # Don't suppress Person
-                if d.get("raw_label") == "Person" or kept.get("raw_label") == "Person":
-                    continue
+                pass # Allow NMS to suppress duplicate persons
                 box_b = kept.get("bbox")
                 iou = self._calc_iou(box_a, box_b)
                 if iou > iou_thresh:
