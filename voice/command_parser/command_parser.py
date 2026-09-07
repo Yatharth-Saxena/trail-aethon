@@ -21,20 +21,38 @@ class Intent(str, Enum):
     HELP = "HELP"
     GREETING = "GREETING"
     STATUS = "STATUS"
+    MUTE = "MUTE"
     UNKNOWN = "UNKNOWN"
 
-# Wake-word patterns to strip before intent matching
+# Comprehensive wake-word patterns covering all phonetics and speech-to-text transcriptions
+WAKE_TWO_WORD_VARIANTS = (
+    r"ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|"
+    r"eden|aeon|item|anton|titan|python|than|then|turn|tane|thanks?|ton|tan|aton|chetan"
+)
+
+WAKE_SINGLE_WORD_VARIANTS = (
+    r"ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|"
+    r"eden|aeon|item|anton|titan|python|than|then|turn|tane|aton|hetan|chetan"
+)
+
 WAKE_WORD_PATTERNS = [
-    r"^hey\s+ae?thon\b[,.\s]*",
-    r"^hey\s+ethan\b[,.\s]*",
-    r"^hey\s+eaton\b[,.\s]*",
-    r"^hey\s+athlon\b[,.\s]*",
-    r"^ae?thon\b[,.\s]*",
-    r"^ethan\b[,.\s]*",
-    r"^hey\s+athena\b[,.\s]*",
-    r"^okay\s+ae?thon\b[,.\s]*",
-    r"^ok\s+ae?thon\b[,.\s]*",
+    # Repeated wake calls e.g. 'ethane than', 'ethan ethan', 'aethon aethon', 'he tane tane tan'
+    rf"^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.\s]*",
+    # Two-word call: Hey / Hi / Hello / OK / Okay / He / A / Suno + name variant
+    rf"^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)\s+(?:{WAKE_TWO_WORD_VARIANTS})\b[,.\s]*",
+    # Anywhere in phrase two-word call (e.g. "uh hey aethon", "please hey aethon")
+    rf"\b(?:hey|hi|hello|ok|okay|he|suno)\s+(?:{WAKE_TWO_WORD_VARIANTS})\b",
+    # Single word fast call (hetan, ethan, ethane, aethon, aethan, etc. - NOT standalone 'thanks')
+    rf"^\s*(?:{WAKE_SINGLE_WORD_VARIANTS})\b[,.\s]*",
 ]
+
+def has_wake_word(text: str) -> bool:
+    if not text:
+        return False
+    for pat in WAKE_WORD_PATTERNS:
+        if re.search(pat, text, re.IGNORECASE):
+            return True
+    return False
 
 class CommandParser:
     def __init__(self):
@@ -43,12 +61,10 @@ class CommandParser:
                 r"\bstart( the)? experiment\b",
                 r"\bbegin( the)? experiment\b",
                 r"\blaunch experiment\b",
-                r"\bstart( the)? (test|procedure)\b"
-            ]),
-            (Intent.GREETING, [
-                r"^(hello|hi|hey|howdy|greetings|good morning|good afternoon|good evening)(\s|$|!|\.|,)",
-                r"\bhow are you\b",
-                r"\bwhat'?s up\b"
+                r"\bstart( the)? (test|procedure)\b",
+                r"^\s*start\s*$",
+                r"^\s*begin\s*$",
+                r"^\s*launch\s*$"
             ]),
             (Intent.STATUS, [
                 r"\bsystem status\b",
@@ -58,15 +74,15 @@ class CommandParser:
                 r"\ball systems\b"
             ]),
             (Intent.WHAT_AM_I_DOING, [
-                r"\bwhat( am i| is being| is) doing\b",
+                r"\bwhat( am i| i am| is being| is) doing\b",
                 r"\bwhat is happening\b",
                 r"\bwhat is going on\b",
                 r"\bwhat('?s| is) my action\b",
                 r"\bcurrent action\b",
                 r"\bdescribe( my)? action\b",
                 r"\bwhat action is (going on|detected)\b",
-                r"\bwhat am i doing right now\b",
-                r"\bwhat am i doing\b"
+                r"\bwhat (am i|i am) doing right now\b",
+                r"\bwhat (am i|i am) doing\b"
             ]),
             (Intent.IDENTIFY_OBJECT, [
                 r"\bwhat is (this|that) object\b",
@@ -93,12 +109,12 @@ class CommandParser:
                 r"\bwhich colou?r\b"
             ]),
             (Intent.WHAT_MOVEMENTS, [
-                r"\bwhat are my movements?\b",
-                r"\bwhat movement\b",
-                r"\btrack movement\b",
+                r"\bwhat are my (movements?|moments?)\b",
+                r"\bwhat (movement|moment)\b",
+                r"\btrack (movement|movements|moment)\b",
                 r"\bhow am i moving\b",
-                r"\bdetect movement\b",
-                r"\bposture and movement\b",
+                r"\bdetect (movement|moment)\b",
+                r"\bposture and (movement|movements)\b",
                 r"\bwhat is my posture\b",
                 r"\bmovement analysis\b"
             ]),
@@ -106,7 +122,11 @@ class CommandParser:
                 r"\b(what('?s| is) )?(the )?next step\b",
                 r"\btell me (the )?next step\b",
                 r"\bwhat do i do( next)?\b",
+                r"^\s*(what('?s| is) )?(the )?procedure\s*$",
                 r"\bnext procedure\b",
+                r"\bwhat to do\b",
+                r"\bwhat next\b",
+                r"^\s*next\s*$",
                 r"\bguidance\b",
                 r"\bwhat step\b",
                 r"\bwhat should i do\b"
@@ -163,15 +183,38 @@ class CommandParser:
                 r"\bcommands\b",
                 r"\bwhat can you do\b",
                 r"\bwhat commands\b"
+            ]),
+            (Intent.MUTE, [
+                r"\b(chup|chup raho|shut up|be quiet|silence|mute|stop talking|stop speaking)\b"
+            ]),
+            (Intent.GREETING, [
+                r"\b(hello|hi|hey|howdy|greetings|good morning|good afternoon|good evening|good day)\b",
+                r"\b(namaste|namaskar|kaise ho|kya haal|kya chal raha)\b",
+                r"\bhow are you( doing)?\b",
+                r"\bhow('?s| is) it going\b",
+                r"\bhow are things\b",
+                r"\bwhat'?s up\b",
+                r"\bwho are you\b",
+                r"\bwhat is your name\b",
+                r"\bwhat('?s| is) your name\b",
+                r"\bintroduce yourself\b",
+                r"\btell me about yourself\b",
+                r"\bthank(s| you)( so much)?\b",
+                r"\bappreciate it\b",
+                r"\b(good|great) job\b",
+                r"\bare you (there|listening|online|ready)\b",
+                r"\bcan you hear me\b",
+                r"\b(bye|goodbye|see you|good night)\b"
             ])
         ]
 
     def _strip_wake_word(self, text: str) -> str:
         """Remove wake-word prefix from the text so intent matching works
         on the actual command part."""
-        cleaned = text
-        for pattern in WAKE_WORD_PATTERNS:
-            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = text.strip()
+        cleaned = re.sub(rf"^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.\s]*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(rf"^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)\s+(?:{WAKE_TWO_WORD_VARIANTS})\b[,.\s]*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(rf"^\s*(?:{WAKE_SINGLE_WORD_VARIANTS})\b[,.\s]*", "", cleaned, flags=re.IGNORECASE).strip()
         return cleaned
 
     def parse(self, text: str) -> Intent:

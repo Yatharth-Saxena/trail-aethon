@@ -11,10 +11,16 @@ class TextToSpeechService:
         self.queue = queue.Queue()
         self.is_running = True
         self.muted = False
+        self.is_speaking = False
         self.worker_thread = threading.Thread(target=self._worker, daemon=True)
         self.worker_thread.start()
 
     def _worker(self):
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
         engine = None
         try:
             engine = pyttsx3.init()
@@ -23,9 +29,9 @@ class TextToSpeechService:
             # Pick a natural voice if available
             voices = engine.getProperty('voices')
             if voices:
-                # Prefer English voice
+                # Prefer English female voice (Microsoft Zira)
                 for v in voices:
-                    if "zira" in v.name.lower() or "david" in v.name.lower() or "en" in v.id.lower():
+                    if "zira" in v.name.lower():
                         engine.setProperty('voice', v.id)
                         break
         except Exception as e:
@@ -39,6 +45,7 @@ class TextToSpeechService:
                 if not self.muted and text.strip():
                     if engine:
                         try:
+                            self.is_speaking = True
                             engine.say(text)
                             engine.runAndWait()
                         except Exception as e:
@@ -48,11 +55,18 @@ class TextToSpeechService:
                                 engine = pyttsx3.init()
                             except Exception:
                                 pass
+                        finally:
+                            self.is_speaking = False
                 self.queue.task_done()
             except queue.Empty:
                 continue
             except Exception as e:
                 print(f"[TTS Loop Error] {e}")
+                self.is_speaking = False
+
+    @property
+    def is_active(self) -> bool:
+        return self.is_speaking or not self.queue.empty()
 
     def speak(self, text: str):
         if not text or self.muted:

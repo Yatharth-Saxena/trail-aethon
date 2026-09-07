@@ -19,7 +19,20 @@ def run():
     print(f"Backend Server: http://localhost:{SERVER_PORT}")
     print("Webcam & AI Perception Pipeline initializing...")
     print("=" * 60)
-    uvicorn.run("backend.main:app", host=SERVER_HOST, port=SERVER_PORT, reload=False)
+    while True:
+        try:
+            uvicorn.run(
+                "backend.main:app",
+                host=SERVER_HOST,
+                port=SERVER_PORT,
+                reload=False,
+                ws_ping_interval=None,
+                ws_ping_timeout=None
+            )
+        except Exception as e:
+            print(f"[AETHON Core] Server instance terminated: {e}. Restarting in 1s...")
+            import time
+            time.sleep(1)
 
 if __name__ == "__main__":
     run()

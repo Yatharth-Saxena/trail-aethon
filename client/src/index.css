@@ -34,8 +34,7 @@ html, body {
   margin: 0;
   padding: 0;
   width: 100%;
-  height: 100%;
-  min-width: 320px;
+  min-height: 100%;
   background: #050607;
   color-scheme: dark;
   color: var(--foreground);
@@ -43,14 +42,9 @@ html, body {
   font-size: var(--type-md);
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
-}
-
-@media (min-width: 1024px) {
-  html, body {
-    overflow: hidden; /* Zero page scrollbar on desktop */
-    height: 100vh;
-    max-height: 100vh;
-  }
+  overflow-y: auto;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
 }
 
 button, input {
@@ -67,20 +61,18 @@ button:focus-visible, input:focus-visible {
   outline-offset: 2px;
 }
 
-/* Custom Slim Scrollbars */
+/* Visually hide scrollbars everywhere while allowing normal mousewheel, trackpad, and touch scrolling */
+* {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+*::-webkit-scrollbar,
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: rgba(220, 230, 235, 0.22);
-  border-radius: 999px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(220, 230, 235, 0.45);
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent !important;
 }
 
 /* ==========================================================================
@@ -90,18 +82,13 @@ button:focus-visible, input:focus-visible {
 .aethon-app {
   position: relative;
   width: 100%;
-  height: 100%;
   min-height: 100vh;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: #050607;
   isolation: isolate;
-}
-
-@media (min-width: 1024px) {
-  .aethon-app {
-    height: 100vh;
-    max-height: 100vh;
-  }
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
 }
 
 .space-backdrop {
@@ -1331,48 +1318,73 @@ button:focus-visible, input:focus-visible {
 }
 
 .assistant-mode-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
   margin: 10px 0 8px;
-  padding: 6px 11px;
+  padding: 8px 14px;
   border-radius: 10px;
-  background: rgba(10, 13, 16, 0.4);
-  border: 1px solid rgba(224, 233, 236, 0.12);
+  background: rgba(10, 13, 16, 0.55);
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
   flex: 0 0 auto;
 }
 
 .waveform {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 7px;
-  width: 100%;
-  height: 22px;
+  gap: 6px;
+  height: 28px;
+  padding: 0 2px;
 }
 
 .waveform i {
-  flex: 1 1 0;
-  max-width: 6px;
-  min-width: 2.5px;
-  height: 8px;
+  display: block;
+  flex: 0 0 5px;
+  width: 5px;
   border-radius: 999px;
-  background: rgba(215, 227, 232, 0.6);
-  animation: waveform-pulse 1.4s ease-in-out infinite alternate;
+  background: rgba(215, 227, 232, 0.55);
+  box-shadow: none;
+  transform-origin: center;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+  animation: none;
 }
 
-.waveform i:nth-child(2) { height: 15px; animation-delay: 0.15s; }
-.waveform i:nth-child(3) { height: 22px; animation-delay: 0.3s; }
-.waveform i:nth-child(4) { height: 12px; animation-delay: 0.45s; }
-.waveform i:nth-child(5) { height: 19px; animation-delay: 0.2s; }
-.waveform i:nth-child(6) { height: 14px; animation-delay: 0.5s; }
-.waveform i:nth-child(7) { height: 17px; animation-delay: 0.35s; }
-.waveform i:nth-child(8) { height: 10px; animation-delay: 0.1s; }
+.waveform i:nth-child(1) { height: 8px; }
+.waveform i:nth-child(2) { height: 16px; }
+.waveform i:nth-child(3) { height: 24px; }
+.waveform i:nth-child(4) { height: 13px; }
+.waveform i:nth-child(5) { height: 20px; }
+.waveform i:nth-child(6) { height: 15px; }
+.waveform i:nth-child(7) { height: 17px; }
+.waveform i:nth-child(8) { height: 8px; }
 
-@keyframes waveform-pulse {
-  0% { transform: scaleY(0.4); opacity: 0.4; }
-  100% { transform: scaleY(1); opacity: 0.9; }
+/* Dynamic fluid equalizer animation when AETHON is called or active */
+.waveform.animating i {
+  background: linear-gradient(180deg, #67e8f9 0%, #34d399 100%);
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.45);
+  animation: aethon-wave-motion 0.9s ease-in-out infinite alternate;
+}
+
+.waveform.animating i:nth-child(1) { animation-delay: 0.0s; }
+.waveform.animating i:nth-child(2) { animation-delay: 0.12s; }
+.waveform.animating i:nth-child(3) { animation-delay: 0.24s; }
+.waveform.animating i:nth-child(4) { animation-delay: 0.36s; }
+.waveform.animating i:nth-child(5) { animation-delay: 0.18s; }
+.waveform.animating i:nth-child(6) { animation-delay: 0.42s; }
+.waveform.animating i:nth-child(7) { animation-delay: 0.30s; }
+.waveform.animating i:nth-child(8) { animation-delay: 0.08s; }
+
+@keyframes aethon-wave-motion {
+  0% {
+    transform: scaleY(0.35);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scaleY(1.25);
+    opacity: 1;
+    box-shadow: 0 0 12px rgba(52, 211, 153, 0.7);
+  }
 }
 
 .mode-select {
@@ -1387,6 +1399,15 @@ button:focus-visible, input:focus-visible {
   font-size: 12px;
 }
 
+.say-aethon-hint {
+  font-family: var(--display);
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(213, 222, 226, 0.65);
+  letter-spacing: 0.03em;
+  user-select: none;
+}
+
 .conversation {
   display: flex;
   flex-direction: column;
@@ -1396,6 +1417,15 @@ button:focus-visible, input:focus-visible {
   overflow-y: auto;
   padding-right: 4px;
   margin-bottom: 8px;
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
+
+.conversation::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+  width: 0;
+  height: 0;
+  background: transparent;
 }
 
 .conversation-message {

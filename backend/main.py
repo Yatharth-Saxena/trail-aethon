@@ -20,6 +20,7 @@ from experiment.state_machine.experiment_state import ExperimentEvent
 from ai.pipeline.perception_pipeline import perception_pipeline
 from voice.command_parser.aethon_command_service import aethon_command_service
 from voice.speech_to_text.stt import stt_service
+from voice.text_to_speech.tts import tts_service
 from event_logging.event_logger import event_logger
 from data.session_manager import session_manager
 
@@ -36,6 +37,15 @@ app.add_middleware(
 
 # Active WebSocket connections
 active_connections: List[WebSocket] = []
+
+def handle_hardware_voice_command(raw_text: str):
+    """Callback for audio recognized by the physical microphone."""
+    try:
+        perception_state = perception_pipeline.get_perception_state()
+        res = aethon_command_service.handle_command(raw_text, current_perception=perception_state, source="hardware_mic")
+        print(f"[AETHON Voice System] Hardware mic command processed: '{raw_text}' -> '{res.get('response')}'")
+    except Exception as e:
+        print(f"[AETHON Voice System] Error handling hardware mic command: {e}")
 
 async def broadcast_telemetry():
     """Background task broadcasting real-time perception and experiment state to all connected clients."""
@@ -64,12 +74,19 @@ async def broadcast_telemetry():
                     "camera": {
                         "fps": round(camera_service.fps if camera_service.fps > 0 else 60.0, 1),
                         "recording": video_recorder.is_recording,
-                        "device_index": camera_service.camera_index
+                        "device_index": camera_service.camera_index,
+                        "mirror": camera_service.mirror
                     },
                     "perception": perception,
                     "experiment": exp_state,
                     "logs": event_logger.get_recent_logs(limit=15),
                     "image": b64_img,
+                    "conversation": aethon_command_service.get_history(),
+                    "voice": {
+                        "hardware_listening": stt_service.is_listening,
+                        "last_command": stt_service.last_command,
+                        "is_active": aethon_command_service.is_active() or tts_service.is_active
+                    },
                     "ai": {
                         "state": "OBSERVING" if exp_state.get("running") else "STANDBY",
                         "active": True
@@ -92,6 +109,7 @@ async def broadcast_telemetry():
 @app.on_event("startup")
 async def on_startup():
     asyncio.create_task(broadcast_telemetry())
+    print("[AETHON Backend] Telemetry broadcaster started. Physical mic listener available on-demand.")
 
 @app.websocket("/ws")
 @app.websocket("/ws/telemetry")
@@ -106,6 +124,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "fps": round(camera_service.fps if camera_service.fps > 0 else 60.0, 1),
                 "recording": video_recorder.is_recording,
                 "device_index": camera_service.camera_index,
+                "mirror": camera_service.mirror,
                 "devices": camera_service.list_cameras()
             },
             "experiment": experiment_manager.get_state(),
@@ -258,6 +277,15 @@ def toggle_overlays():
     camera_service.show_overlays = not camera_service.show_overlays
     return {"show_overlays": camera_service.show_overlays}
 
+@app.post("/api/camera/mirror/toggle")
+def toggle_camera_mirror():
+    new_state = camera_service.toggle_mirror()
+    return {"mirror": new_state}
+
+@app.get("/api/camera/mirror")
+def get_camera_mirror():
+    return {"mirror": camera_service.mirror}
+
 # Experiment Endpoints
 @app.get("/api/experiment/status")
 def get_experiment_status():
@@ -346,6 +374,22 @@ async def transcribe_audio(audio: UploadFile = File(...)):
 @app.get("/api/voice/history")
 def get_voice_history():
     return {"history": aethon_command_service.get_history()}
+
+@app.get("/api/voice/status")
+def get_voice_status():
+    return {
+        "hardware_mic_listening": stt_service.is_listening,
+        "last_command": stt_service.last_command,
+        "history_count": len(aethon_command_service.get_history())
+    }
+
+@app.post("/api/voice/mic/toggle")
+def toggle_voice_mic():
+    if stt_service.is_listening:
+        stt_service.stop_background_listener()
+    else:
+        stt_service.start_background_listener(on_command_callback=handle_hardware_voice_command)
+    return {"hardware_mic_listening": stt_service.is_listening}
 
 # Logs and Sessions Endpoints
 @app.get("/api/logs")

@@ -19,8 +19,12 @@ import {
   Layers,
   AlertTriangle,
   RefreshCw,
-  Sliders
+  Sliders,
+  Volume2,
+  VolumeX,
+  FlipHorizontal
 } from "lucide-react";
+import { AudioRecorder } from "../lib/audioRecorder.js";
 
 const ISRO_LOGO = "/isro-logo.png";
 const ASSEMBLY = "/assembly.png";
@@ -219,6 +223,7 @@ export default function Home() {
   const [showCameraMenu, setShowCameraMenu] = useState(false);
   const [streamKey, setStreamKey] = useState(Date.now());
   const [useBrowserWebcam, setUseBrowserWebcam] = useState(false);
+  const [mirrorFeed, setMirrorFeed] = useState(true);
   const cameraStageRef = useRef(null);
   const videoRef = useRef(null);
   const overlayCanvasRef = useRef(null);
@@ -459,8 +464,11 @@ export default function Home() {
   const [voiceMode, setVoiceMode] = useState(true);
   const [assistantDraft, setAssistantDraft] = useState("");
   const [isListening, setIsListening] = useState(false);
-  const [continuousListening, setContinuousListening] = useState(false);
+  const [continuousListening, setContinuousListening] = useState(true);
   const [voiceStatus, setVoiceStatus] = useState("idle"); // "idle" | "listening" | "processing" | "wake_detected"
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [audioRecording, setAudioRecording] = useState(false);
+  const audioRecorderRef = useRef(null);
   const recognitionRef = useRef(null);
   const [messages, setMessages] = useState([
     {
@@ -506,6 +514,193 @@ export default function Home() {
     containerRef.current.style.setProperty("--mouse-y", `${y}px`);
   }, []);
 
+  const [isAssistantActive, setIsAssistantActive] = useState(false);
+  const activeTimerRef = useRef(null);
+  const lastWakeTimeRef = useRef(0);
+
+  const WAKE_WORD_REGEX = /^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)?\s*(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|titan|python|than|then|hetan|tane|thanks?|ton|tan|aton)\b[,\s.]*/i;
+  const REPEATED_WAKE_REGEX = /^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,\s.]*/i;
+
+  const normalizeAethonWakeWord = useCallback((text) => {
+    if (!text) return text;
+    let cleaned = text.trim();
+    cleaned = cleaned.replace(/^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.\s]*/i, "Hey AETHON, ");
+    cleaned = cleaned.replace(/^\s*(?:hey|hi|hello|he|a|ey|ay|suno)\s+(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|titan|python|than|then|tane|thanks?|ton|tan|aton)\b[,\s.]*/i, "Hey AETHON, ");
+    cleaned = cleaned.replace(/^\s*okay?\s+(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|than|then|tane|thanks?|ton|tan|aton)\b[,\s.]*/i, "OK AETHON, ");
+    cleaned = cleaned.replace(/^\s*(?:hetan)\b[,\s.]*/i, "Hey AETHON, ");
+    cleaned = cleaned.replace(/^\s*(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|than|then|tane|aton)\b[,\s.]*/i, "AETHON, ");
+    cleaned = cleaned.replace(/^Hey AETHON,\s*$/i, "Hey AETHON");
+    cleaned = cleaned.replace(/^OK AETHON,\s*$/i, "OK AETHON");
+    cleaned = cleaned.replace(/^AETHON,\s*$/i, "AETHON");
+    return cleaned.trim();
+  }, []);
+
+  const stripWakeWord = useCallback((text) => {
+    if (!text) return { hadWake: false, command: "" };
+    let cleaned = text.trim();
+    let hadWake = false;
+
+    if (REPEATED_WAKE_REGEX.test(cleaned)) {
+      cleaned = cleaned.replace(REPEATED_WAKE_REGEX, "").trim();
+      hadWake = true;
+    } else {
+      const match = cleaned.match(WAKE_WORD_REGEX);
+      if (match) {
+        cleaned = cleaned.slice(match[0].length).replace(/^[,\s.]+/, "").trim();
+        hadWake = true;
+      }
+    }
+    return { hadWake, command: cleaned };
+  }, []);
+
+  // --- Natural Speech Synthesis (Browser Neural Voice) ---
+  const voicesRef = useRef([]);
+  const voiceModeRef = useRef(voiceMode);
+  useEffect(() => {
+    voiceModeRef.current = voiceMode;
+  }, [voiceMode]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      const loadVoices = () => {
+        try {
+          const vList = window.speechSynthesis.getVoices() || [];
+          if (vList.length > 0) {
+            voicesRef.current = vList;
+          }
+        } catch (e) {}
+      };
+      loadVoices();
+      if (window.speechSynthesis.onvoiceschanged !== undefined) {
+        window.speechSynthesis.onvoiceschanged = loadVoices;
+      }
+    }
+  }, []);
+
+  // Select the highest-quality natural neural voice (Microsoft Aria/Jenny Online Natural, Google US English, Samantha, etc.)
+  const getPreferredVoice = useCallback(() => {
+    let list = (voicesRef.current && voicesRef.current.length > 0)
+      ? voicesRef.current
+      : (typeof window !== "undefined" && "speechSynthesis" in window ? window.speechSynthesis.getVoices() : []);
+    if (!list || list.length === 0) return null;
+
+    // 1. Microsoft Natural online female voices (Edge: Aria, Jenny, Swara, Neerja, Ava, Emma)
+    const msNaturalFemale = list.find(v =>
+      (v.name.includes("Natural") || v.name.includes("Neural") || v.name.includes("Online")) &&
+      (v.name.includes("Aria") || v.name.includes("Jenny") || v.name.includes("Ava") || v.name.includes("Emma") || v.name.includes("Swara") || v.name.includes("Neerja") || !v.name.toLowerCase().includes("guy"))
+    );
+    if (msNaturalFemale) return msNaturalFemale;
+
+    // 2. Any Microsoft Natural / Neural voice
+    const anyNatural = list.find(v =>
+      (v.name.includes("Natural") || v.name.includes("Neural")) && !v.name.toLowerCase().includes("david")
+    );
+    if (anyNatural) return anyNatural;
+
+    // 3. Google US English (Standard Chrome natural female voice)
+    const googleUs = list.find(v => v.name === "Google US English");
+    if (googleUs) return googleUs;
+
+    // 4. Google UK English Female
+    const googleUk = list.find(v => v.name === "Google UK English Female");
+    if (googleUk) return googleUk;
+
+    // 5. Any Google female / neural voice
+    const anyGoogleFemale = list.find(v => v.name.includes("Google") && !v.name.toLowerCase().includes("male"));
+    if (anyGoogleFemale) return anyGoogleFemale;
+
+    // 6. Samantha (macOS default natural female voice)
+    const samantha = list.find(v => v.name.includes("Samantha"));
+    if (samantha) return samantha;
+
+    // 7. Indian English or Hindi female voice (Swara, Kalpana, Neerja)
+    const inFemale = list.find(v =>
+      v.name.toLowerCase().includes("swara") ||
+      v.name.toLowerCase().includes("neerja") ||
+      v.name.toLowerCase().includes("kalpana") ||
+      v.lang.startsWith("hi") ||
+      v.lang.startsWith("en-IN")
+    );
+    if (inFemale) return inFemale;
+
+    // 8. Any English voice that is not David or Zira
+    const anyCleanEnglish = list.find(v =>
+      v.lang && v.lang.startsWith("en") &&
+      !v.name.toLowerCase().includes("david") &&
+      !v.name.toLowerCase().includes("zira") &&
+      !v.name.toLowerCase().includes("mark")
+    );
+    if (anyCleanEnglish) return anyCleanEnglish;
+
+    // 9. Any non-David voice
+    const anyNonDavid = list.find(v => !v.name.toLowerCase().includes("david"));
+    return anyNonDavid || list[0];
+  }, []);
+
+  const lastSpokenIdRef = useRef(1); // 1 is initial welcome message
+
+  const speakAssistantResponse = useCallback((text, msgId = null) => {
+    if (!text || !voiceModeRef.current) return;
+    if (msgId !== null && msgId !== undefined) {
+      if (lastSpokenIdRef.current >= msgId) return;
+      lastSpokenIdRef.current = msgId;
+    }
+    lastWakeTimeRef.current = Date.now();
+    try {
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        if (window.speechSynthesis.paused) {
+          try { window.speechSynthesis.resume(); } catch (e) {}
+        }
+        window.speechSynthesis.cancel();
+        const clean = text
+          .replace(/[*_#`~[\]()]/g, " ")
+          .replace(/https?:\/\/\S+/g, "")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!clean) return;
+
+        const utter = new SpeechSynthesisUtterance(clean);
+        utter.rate = 1.02;
+        utter.pitch = 1.0;
+        const voice = getPreferredVoice();
+        if (voice) utter.voice = voice;
+
+        // Wave animation starts when AETHON is active/speaking
+        setIsAssistantActive(true);
+        if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
+        const estDuration = Math.max(3000, clean.length * 90);
+        activeTimerRef.current = setTimeout(() => {
+          setIsAssistantActive(false);
+          setVoiceStatus("idle");
+        }, estDuration);
+
+        utter.onstart = () => {
+          setIsAssistantActive(true);
+        };
+        utter.onend = () => {
+          setIsAssistantActive(false);
+          setVoiceStatus("idle");
+          if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
+        };
+        utter.onerror = () => {
+          setIsAssistantActive(false);
+          setVoiceStatus("idle");
+          if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
+        };
+
+        window.speechSynthesis.speak(utter);
+      }
+    } catch (e) {
+      console.warn("[TTS SpeechSynthesis Error]", e);
+      setIsAssistantActive(false);
+    }
+  }, [getPreferredVoice]);
+
+  const speakAssistantRef = useRef(speakAssistantResponse);
+  useEffect(() => {
+    speakAssistantRef.current = speakAssistantResponse;
+  }, [speakAssistantResponse]);
+
   // WebSocket connection & live telemetry
   useEffect(() => {
     let ws = null;
@@ -530,6 +725,7 @@ export default function Home() {
                 if (data.camera.recording !== undefined) setIsRecording(data.camera.recording);
                 if (data.camera.devices) setCameras(data.camera.devices);
                 if (data.camera.device_index !== undefined) setSelectedCamera(data.camera.device_index);
+                if (data.camera.mirror !== undefined) setMirrorFeed(data.camera.mirror);
               }
 
               if (data.experiment) {
@@ -564,8 +760,39 @@ export default function Home() {
                 }
               }
 
+              if (data.voice && data.voice.is_active) {
+                setIsAssistantActive(true);
+                if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
+                activeTimerRef.current = setTimeout(() => {
+                  setIsAssistantActive(false);
+                }, 2800);
+              }
+
               if (data.conversation && data.conversation.length > 0) {
-                setMessages(data.conversation);
+                setMessages((prev) => {
+                  if (prev.length === data.conversation.length) {
+                    const prevLast = prev[prev.length - 1];
+                    const newLast = data.conversation[data.conversation.length - 1];
+                    if (prevLast?.id === newLast?.id && prevLast?.text === newLast?.text) {
+                      return prev;
+                    }
+                  }
+                  return data.conversation;
+                });
+
+                const lastMsg = data.conversation[data.conversation.length - 1];
+                if (lastMsg && lastMsg.role === "assistant" && lastMsg.id > lastSpokenIdRef.current) {
+                  lastWakeTimeRef.current = Date.now();
+                  setIsAssistantActive(true);
+                  if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
+                  activeTimerRef.current = setTimeout(() => {
+                    setIsAssistantActive(false);
+                  }, 3500);
+
+                  if (speakAssistantRef.current) {
+                    speakAssistantRef.current(lastMsg.text, lastMsg.id);
+                  }
+                }
               }
 
               if (data.logs) {
@@ -617,25 +844,32 @@ export default function Home() {
     };
   }, []);
 
-  // Auto scroll chat to bottom
+  // Auto scroll chat to bottom only when new messages are actually added
+  const prevMsgCountRef = useRef(messages.length);
   useEffect(() => {
-    if (chatBottomRef.current) {
-      chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
+    if (messages.length > prevMsgCountRef.current) {
+      prevMsgCountRef.current = messages.length;
+      if (chatBottomRef.current) {
+        chatBottomRef.current.scrollIntoView({ behavior: "smooth" });
+      }
     }
-  }, [messages]);
+  }, [messages.length]);
 
   // Command sender
-  const sendCommand = async (text) => {
+  const sendCommand = useCallback(async (text, customDisplay = null) => {
     if (!text || !text.trim()) return;
+    lastWakeTimeRef.current = Date.now();
     const cleanText = text.trim();
+    const displayText = customDisplay || normalizeAethonWakeWord(cleanText);
     setAssistantDraft("");
+    setLiveTranscript("");
 
-    // Optimistic user bubble
+    // Optimistic user bubble with clean AETHON spelling
     const now = new Date();
-    const timeStr = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
     setMessages((prev) => [
       ...prev,
-      { id: prev.length + 1, role: "user", speaker: "You", time: timeStr, text: cleanText }
+      { id: prev.length + 1, role: "user", speaker: "You", time: timeStr, text: displayText }
     ]);
 
     try {
@@ -651,38 +885,98 @@ export default function Home() {
       if (data.experiment_state) {
         setExperimentState(data.experiment_state);
       }
+      if (data.response) {
+        const lastMsg = data.conversation && data.conversation[data.conversation.length - 1];
+        const msgId = lastMsg?.role === "assistant" ? lastMsg.id : null;
+        speakAssistantResponse(data.response, msgId);
+      }
     } catch (e) {
       console.error("[Command Send Error]", e);
     }
-  };
+  }, [speakAssistantResponse]);
 
-  // Wake-word patterns
-  const WAKE_WORDS = ["hey aethon", "hey ethan", "hey eaton", "aethon", "hey athena", "ok aethon", "okay aethon"];
-
-  const stripWakeWord = (text) => {
-    const lower = text.toLowerCase().trim();
-    for (const ww of WAKE_WORDS) {
-      if (lower.startsWith(ww)) {
-        const rest = text.slice(ww.length).replace(/^[,\s.]+/, "").trim();
-        return { hadWake: true, command: rest };
+  // Fallback WAV audio uploader
+  const sendAudioBlob = useCallback(async (blob) => {
+    try {
+      setVoiceStatus("processing");
+      const formData = new FormData();
+      formData.append("audio", blob, "voice_input.wav");
+      const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
+        method: "POST",
+        body: formData
+      });
+      const data = await res.json();
+      if (data.status === "success" && data.assistant_response) {
+        if (data.assistant_response.conversation) {
+          setMessages(data.assistant_response.conversation);
+        }
+        if (data.assistant_response.response) {
+          const lastMsg = data.assistant_response.conversation && data.assistant_response.conversation[data.assistant_response.conversation.length - 1];
+          const msgId = lastMsg?.role === "assistant" ? lastMsg.id : null;
+          speakAssistantResponse(data.assistant_response.response, msgId);
+        }
+      } else {
+        const errMsg = "Audio received, but voice could not be transcribed clearly. Please speak closer to your microphone.";
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: prev.length + 1,
+            role: "assistant",
+            speaker: "Aethon",
+            time: new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+            text: errMsg
+          }
+        ]);
+        speakAssistantResponse(errMsg);
       }
+    } catch (err) {
+      console.error("[Audio Upload Error]", err);
+    } finally {
+      setVoiceStatus(continuousListening ? "listening" : "idle");
+      setIsListening(continuousListening);
     }
-    return { hadWake: false, command: text.trim() };
-  };
+  }, [continuousListening, speakAssistantResponse]);
 
-  // Continuous Listening – always-on voice recognition with wake-word
+
+
+  const continuousListeningRef = useRef(continuousListening);
+  useEffect(() => {
+    continuousListeningRef.current = continuousListening;
+  }, [continuousListening]);
+
+  const sendCommandRef = useRef(sendCommand);
+  useEffect(() => {
+    sendCommandRef.current = sendCommand;
+  }, [sendCommand]);
+
+  const stripWakeWordRef = useRef(stripWakeWord);
+  useEffect(() => {
+    stripWakeWordRef.current = stripWakeWord;
+  }, [stripWakeWord]);
+
+  const normalizeAethonWakeWordRef = useRef(normalizeAethonWakeWord);
+  useEffect(() => {
+    normalizeAethonWakeWordRef.current = normalizeAethonWakeWord;
+  }, [normalizeAethonWakeWord]);
+
+  const restartTimerRef = useRef(null);
+
+  // Continuous Listening – always-on voice recognition
   const startContinuousListening = useCallback(() => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRec) {
+      console.warn("[Voice] Web SpeechRecognition unavailable in this browser; Push-to-Talk or hardware mic can be used.");
+      return;
+    }
 
     // Stop any existing instance
     if (recognitionRef.current) {
       try { recognitionRef.current.abort(); } catch (e) {}
     }
 
-    const recognition = new SpeechRecognition();
+    const recognition = new SpeechRec();
     recognition.lang = "en-US";
-    recognition.interimResults = false;
+    recognition.interimResults = true;
     recognition.continuous = true;
     recognition.maxAlternatives = 1;
     recognitionRef.current = recognition;
@@ -693,47 +987,79 @@ export default function Home() {
     };
 
     recognition.onresult = (event) => {
+      let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          const transcript = event.results[i][0].transcript;
-          const { hadWake, command } = stripWakeWord(transcript);
+          setLiveTranscript("");
+          const inActiveWindow = (Date.now() - (lastWakeTimeRef.current || 0)) < 25000;
+          const { hadWake, command } = stripWakeWordRef.current ? stripWakeWordRef.current(transcript) : { hadWake: false, command: "" };
 
-          if (hadWake && command) {
-            setVoiceStatus("processing");
-            sendCommand(command);
-            setTimeout(() => setVoiceStatus("listening"), 1500);
-          } else if (hadWake && !command) {
-            // Just the wake word → acknowledge
+          if (hadWake) {
+            lastWakeTimeRef.current = Date.now();
+            const toSend = command ? command : "hello";
+            const displayBubble = normalizeAethonWakeWordRef.current ? normalizeAethonWakeWordRef.current(transcript) : transcript;
+            setIsAssistantActive(true);
             setVoiceStatus("wake_detected");
-            sendCommand("hello");
-            setTimeout(() => setVoiceStatus("listening"), 1500);
+            if (sendCommandRef.current) {
+              sendCommandRef.current(toSend, displayBubble);
+            }
+          } else if (inActiveWindow) {
+            const trimmed = transcript.trim();
+            if (trimmed.length > 2) {
+              lastWakeTimeRef.current = Date.now();
+              setIsAssistantActive(true);
+              setVoiceStatus("processing");
+              if (sendCommandRef.current) {
+                sendCommandRef.current(trimmed, trimmed);
+              }
+            }
+          } else {
+            // Strictly require calling AETHON when outside active conversation window
+            return;
           }
-          // If no wake word in continuous mode, ignore (ambient noise)
+        } else {
+          interim += transcript;
+        }
+      }
+      if (interim) {
+        const inActiveWindow = (Date.now() - (lastWakeTimeRef.current || 0)) < 25000;
+        const { hadWake } = stripWakeWordRef.current ? stripWakeWordRef.current(interim) : { hadWake: false };
+        if (hadWake) {
+          const displayBubble = normalizeAethonWakeWordRef.current ? normalizeAethonWakeWordRef.current(interim) : interim;
+          setLiveTranscript(displayBubble);
+        } else if (inActiveWindow && interim.trim().length > 2) {
+          setLiveTranscript(interim.trim());
+        } else {
+          setLiveTranscript("");
         }
       }
     };
 
     recognition.onerror = (e) => {
-      if (e.error === "not-allowed") {
+      if (e.error === "aborted") return; // Handled restart or cleanup
+      console.warn("[Continuous Voice Error]", e.error);
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         setContinuousListening(false);
         setIsListening(false);
         setVoiceStatus("idle");
         return;
       }
-      // Auto-restart on transient errors
-      setVoiceStatus("listening");
+      if (continuousListeningRef.current) {
+        setVoiceStatus("listening");
+      }
     };
 
     recognition.onend = () => {
-      // Auto-restart if continuous mode is still enabled
-      if (continuousListening) {
-        setTimeout(() => {
+      if (continuousListeningRef.current) {
+        if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = setTimeout(() => {
           try {
-            recognition.start();
-          } catch (e) {
-            setVoiceStatus("idle");
-          }
-        }, 300);
+            if (continuousListeningRef.current && recognitionRef.current === recognition) {
+              recognition.start();
+            }
+          } catch (e) {}
+        }, 350);
       } else {
         setIsListening(false);
         setVoiceStatus("idle");
@@ -745,15 +1071,20 @@ export default function Home() {
     } catch (e) {
       setVoiceStatus("idle");
     }
-  }, [continuousListening, sendCommand]);
+  }, []);
 
   const stopContinuousListening = useCallback(() => {
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
     if (recognitionRef.current) {
       try { recognitionRef.current.abort(); } catch (e) {}
       recognitionRef.current = null;
     }
     setIsListening(false);
     setVoiceStatus("idle");
+    setLiveTranscript("");
   }, []);
 
   // Effect: start/stop continuous listening when toggle changes
@@ -764,72 +1095,136 @@ export default function Home() {
       stopContinuousListening();
     }
     return () => {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.abort(); } catch (e) {}
-      }
+      stopContinuousListening();
     };
-  }, [continuousListening]);
+  }, [continuousListening, startContinuousListening, stopContinuousListening]);
 
-  // Push-to-Talk Speech Recognition (single-shot, for when continuous mode is OFF)
+  // Push-to-Talk Speech Recognition (with WAV recording fallback)
   const handleMicClick = async () => {
-    if (continuousListening) {
-      // In continuous mode, mic button toggles it off
-      setContinuousListening(false);
-      return;
-    }
+    const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    if (isListening) {
-      if (recognitionRef.current) {
-        try { recognitionRef.current.abort(); } catch (e) {}
-      }
-      setIsListening(false);
-      setVoiceStatus("idle");
-      return;
-    }
-
-    setIsListening(true);
-    setVoiceStatus("listening");
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.lang = "en-US";
-      recognition.interimResults = false;
-      recognition.maxAlternatives = 1;
-      recognitionRef.current = recognition;
-
-      recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
+    // If currently recording via AudioRecorder, stop and upload
+    if (audioRecording && audioRecorderRef.current) {
+      try {
+        const blob = audioRecorderRef.current.stop();
+        setAudioRecording(false);
         setIsListening(false);
         setVoiceStatus("processing");
-        // In push-to-talk, send directly (no wake word needed)
-        const { command } = stripWakeWord(transcript);
-        sendCommand(command || transcript);
-        setTimeout(() => setVoiceStatus("idle"), 1500);
-      };
-
-      recognition.onerror = () => {
-        setIsListening(false);
-        setVoiceStatus("idle");
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-        setVoiceStatus("idle");
-      };
-
-      try {
-        recognition.start();
-      } catch (err) {
+        await sendAudioBlob(blob);
+      } catch (e) {
+        setAudioRecording(false);
         setIsListening(false);
         setVoiceStatus("idle");
       }
-    } else {
-      const promptCmd = prompt("Enter voice command:", "What's the next step?");
+      return;
+    }
+
+    // If already actively capturing speech in manual mode, stop and process
+    if (isListening && !continuousListening) {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch (e) {}
+      }
       setIsListening(false);
       setVoiceStatus("idle");
-      if (promptCmd) {
-        sendCommand(promptCmd);
+      setLiveTranscript("");
+      return;
+    }
+
+    // Actively wake AETHON and open the conversation window
+    lastWakeTimeRef.current = Date.now();
+    setIsAssistantActive(true);
+    setIsListening(true);
+    setVoiceStatus("listening");
+    setLiveTranscript("");
+
+    if (SpeechRec) {
+      try {
+        const recognition = new SpeechRec();
+        recognition.lang = "en-US";
+        recognition.interimResults = true;
+        recognition.maxAlternatives = 1;
+        recognitionRef.current = recognition;
+
+        recognition.onresult = (event) => {
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              setLiveTranscript("");
+              setIsListening(false);
+              setVoiceStatus("processing");
+              const { command } = stripWakeWord(transcript);
+              const toSend = command || transcript;
+              if (toSend) {
+                sendCommand(toSend);
+              }
+              setTimeout(() => setVoiceStatus("idle"), 1200);
+              return;
+            } else {
+              interim += transcript;
+            }
+          }
+          if (interim) {
+            setLiveTranscript(interim);
+          }
+        };
+
+        recognition.onerror = async (e) => {
+          console.warn("[PushToTalk SpeechRecognition Error]", e.error);
+          if (e.error === "network") {
+            try {
+              const rec = new AudioRecorder();
+              await rec.start();
+              audioRecorderRef.current = rec;
+              setAudioRecording(true);
+              setVoiceStatus("listening");
+              return;
+            } catch (recErr) {
+              console.error("[Fallback Mic Error]", recErr);
+            }
+          }
+          setIsListening(false);
+          setVoiceStatus("idle");
+          setLiveTranscript("");
+        };
+
+        recognition.onend = () => {
+          if (!audioRecording) {
+            setIsListening(false);
+            setVoiceStatus("idle");
+          }
+          if (continuousListeningRef.current) {
+            setTimeout(() => {
+              if (continuousListeningRef.current) {
+                startContinuousListening();
+              }
+            }, 600);
+          }
+        };
+
+        recognition.start();
+      } catch (err) {
+        console.error("[Speech Start Error]", err);
+        try {
+          const rec = new AudioRecorder();
+          await rec.start();
+          audioRecorderRef.current = rec;
+          setAudioRecording(true);
+        } catch (recErr) {
+          setIsListening(false);
+          setVoiceStatus("idle");
+        }
+      }
+    } else {
+      try {
+        const rec = new AudioRecorder();
+        await rec.start();
+        audioRecorderRef.current = rec;
+        setAudioRecording(true);
+      } catch (err) {
+        alert("Microphone access could not be initialized. Please check browser permissions.");
+        setIsListening(false);
+        setVoiceStatus("idle");
       }
     }
   };
@@ -854,6 +1249,21 @@ export default function Home() {
       sendCommand(isRecording ? "Recording stopped and saved locally." : "Recording started.");
     } catch (e) {
       setIsRecording(!isRecording);
+    }
+  };
+
+  const handleToggleMirror = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/camera/mirror/toggle`, { method: "POST" });
+      const data = await res.json();
+      if (data.mirror !== undefined) {
+        setMirrorFeed(data.mirror);
+      } else {
+        setMirrorFeed((prev) => !prev);
+      }
+      setStreamKey(Date.now());
+    } catch (e) {
+      setMirrorFeed((prev) => !prev);
     }
   };
 
@@ -1060,11 +1470,19 @@ export default function Home() {
                             autoPlay
                             playsInline
                             muted
-                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                            style={{
+                              width: "100%",
+                              height: "100%",
+                              objectFit: "cover",
+                              transform: mirrorFeed ? "scaleX(-1)" : "none"
+                            }}
                           />
                           <canvas
                             ref={overlayCanvasRef}
                             className="camera-overlay-canvas"
+                            style={{
+                              transform: mirrorFeed ? "scaleX(-1)" : "none"
+                            }}
                           />
                         </>
                       ) : (
@@ -1167,6 +1585,19 @@ export default function Home() {
                       </div>
 
                       <div className="camera-actions">
+                        <button
+                          type="button"
+                          className={mirrorFeed ? "active-action" : ""}
+                          onClick={handleToggleMirror}
+                          title={mirrorFeed ? "Camera feed is mirrored / inverted (Click to toggle)" : "Click to mirror / invert camera feed"}
+                          style={{
+                            background: mirrorFeed ? "rgba(34, 197, 94, 0.2)" : undefined,
+                            borderColor: mirrorFeed ? "rgba(34, 197, 94, 0.5)" : undefined,
+                            color: mirrorFeed ? "#86efac" : undefined
+                          }}
+                        >
+                          <FlipHorizontal size={15} /> {mirrorFeed ? "Mirrored" : "Mirror"}
+                        </button>
                         <button type="button" onClick={handleSnapshot}>
                           <Camera size={16} /> Snapshot
                         </button>
@@ -1521,37 +1952,33 @@ export default function Home() {
                 </div>
                 <div>
                   <div className="assistant-name">AETHON</div>
-                  <p>Your experiment assistant</p>
+                  <p>Spaceflight Mission Assistant</p>
                 </div>
               </div>
 
               <div className="assistant-mode-row">
-                <div className={`waveform ${isListening ? "listening" : ""}`} aria-label="Aethon audio activity">
+                <div
+                  className={`waveform ${isAssistantActive || voiceStatus === "wake_detected" || voiceStatus === "processing" ? "animating" : "idle"}`}
+                  aria-label="Aethon voice waveform"
+                  title={isAssistantActive || voiceStatus === "wake_detected" || voiceStatus === "processing" ? "AETHON active" : "AETHON standby – Say 'Hey AETHON'"}
+                >
                   <i /><i /><i /><i /><i /><i /><i /><i />
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <button
-                    type="button"
-                    className={`mode-select ${continuousListening ? "active" : ""}`}
-                    onClick={() => setContinuousListening(!continuousListening)}
-                    title={continuousListening ? "Stop always listening" : "Enable always-on voice (say 'Hey AETHON')"}
-                    style={{
-                      background: continuousListening ? "rgba(34, 197, 94, 0.25)" : undefined,
-                      border: continuousListening ? "1px solid rgba(34, 197, 94, 0.5)" : undefined,
-                    }}
-                  >
-                    <Mic size={14} style={{ color: continuousListening ? "#22c55e" : undefined }} />
-                    {continuousListening ? "Always On" : "Voice Off"}
-                  </button>
-                  {voiceStatus !== "idle" && (
+                  {audioRecording ? (
                     <span style={{
-                      fontSize: "0.68rem",
-                      color: voiceStatus === "listening" ? "#22c55e" : voiceStatus === "wake_detected" ? "#eab308" : "#3b82f6",
-                      textTransform: "uppercase",
-                      letterSpacing: "0.08em",
-                      animation: "pulse 1.5s ease-in-out infinite"
+                      fontFamily: "var(--display)",
+                      fontSize: "12px",
+                      color: "#ef4444",
+                      fontWeight: 600,
+                      letterSpacing: "0.04em",
+                      animation: "pulse 1s ease-in-out infinite"
                     }}>
-                      {voiceStatus === "listening" ? "● Listening..." : voiceStatus === "wake_detected" ? "★ Wake Detected" : "⟳ Processing"}
+                      ● RECORDING
+                    </span>
+                  ) : (
+                    <span className="say-aethon-hint">
+                      Say &quot;Hey AETHON&quot;
                     </span>
                   )}
                 </div>
@@ -1594,18 +2021,42 @@ export default function Home() {
                 ))}
               </div>
 
+              {liveTranscript && (
+                <div style={{
+                  padding: "6px 10px",
+                  margin: "0 0 6px",
+                  borderRadius: "6px",
+                  background: "rgba(34, 197, 94, 0.15)",
+                  border: "1px solid rgba(34, 197, 94, 0.35)",
+                  color: "#86efac",
+                  fontSize: "0.78rem",
+                  fontFamily: "var(--mono)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  animation: "pulse 2s infinite"
+                }}>
+                  <span style={{ color: "#22c55e", fontWeight: "bold" }}>🎙️ Hearing:</span>
+                  <span>"{liveTranscript}"</span>
+                </div>
+              )}
+
               <div className="assistant-input-wrap">
                 <button
                   type="button"
-                  className={`input-mic ${isListening ? "active" : ""}`}
+                  className={`input-mic ${isListening || continuousListening || audioRecording ? "active" : ""}`}
                   style={{
-                    color: isListening
-                      ? continuousListening ? "#22c55e" : "#ef4444"
+                    color: audioRecording
+                      ? "#ef4444"
+                      : continuousListening
+                      ? "#22c55e"
+                      : isListening
+                      ? "#3b82f6"
                       : "inherit",
-                    animation: isListening ? "pulse 1.5s ease-in-out infinite" : "none"
+                    animation: (isListening || audioRecording) ? "pulse 1.5s ease-in-out infinite" : "none"
                   }}
                   onClick={handleMicClick}
-                  title={continuousListening ? "Stop always listening" : "Push to talk"}
+                  title={continuousListening ? "Always-on voice enabled (Click to switch to manual)" : audioRecording ? "Click to stop recording and send" : isListening ? "Listening... Click to stop" : "Push to talk"}
                 >
                   <Mic size={18} />
                 </button>
@@ -1613,7 +2064,11 @@ export default function Home() {
                   aria-label="Ask Aethon"
                   value={assistantDraft}
                   onChange={(e) => setAssistantDraft(e.target.value)}
-                  placeholder={continuousListening ? "Say 'Hey AETHON' or type..." : "Type or speak to Aethon..."}
+                  placeholder={
+                    liveTranscript
+                      ? `Hearing: "${liveTranscript}"`
+                      : "Say 'Hey AETHON' or type a command..."
+                  }
                   onKeyDown={(e) => {
                     if (e.key === "Enter") sendCommand(assistantDraft);
                   }}

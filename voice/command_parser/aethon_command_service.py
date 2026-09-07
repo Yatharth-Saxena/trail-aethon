@@ -16,19 +16,123 @@ class AethonCommandService:
                 "text": "AETHON online. Ready for Payload Assembly experiment. Say 'Hey AETHON' or press the mic button to interact."
             }
         ]
+        self.last_active_time: float = 0.0
+        self.last_wake_time: float = 0.0
 
-    def handle_command(self, raw_text: str, current_perception: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def is_active(self) -> bool:
+        import time
+        return (time.time() - self.last_active_time) < 4.5
+
+    def is_in_active_window(self) -> bool:
+        import time
+        # 25-second active conversation window after being called
+        return (time.time() - self.last_wake_time) < 25.0
+
+    @staticmethod
+    def _normalize_aethon_spelling(text: str) -> str:
+        if not text:
+            return text
+        import re
+        from voice.command_parser.command_parser import WAKE_TWO_WORD_VARIANTS, WAKE_SINGLE_WORD_VARIANTS
+        cleaned = text.strip()
+        # Repeated wake calls like "ethane than", "ethan ethan", "he tane tane tan"
+        cleaned = re.sub(rf"^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.\s]*", "Hey AETHON, ", cleaned, flags=re.IGNORECASE)
+        # Hey / Hi / Hello / He / A / Suno + variant (including thanks, then, aethan, ton, etc.)
+        cleaned = re.sub(rf"^\s*(?:hey|hi|hello|he|a|ey|ay|suno)\s+(?:{WAKE_TWO_WORD_VARIANTS})\b[,\s.]*", "Hey AETHON, ", cleaned, flags=re.IGNORECASE)
+        # Okay / Ok + variant
+        cleaned = re.sub(rf"^\s*okay?\s+(?:{WAKE_TWO_WORD_VARIANTS})\b[,\s.]*", "OK AETHON, ", cleaned, flags=re.IGNORECASE)
+        # hetan -> Hey AETHON
+        cleaned = re.sub(r"^\s*hetan\b[,\s.]*", "Hey AETHON, ", cleaned, flags=re.IGNORECASE)
+        # Single word fast call
+        cleaned = re.sub(rf"^\s*(?:{WAKE_SINGLE_WORD_VARIANTS})\b[,\s.]*", "AETHON, ", cleaned, flags=re.IGNORECASE)
+        # Clean trailing commas if nothing follows
+        cleaned = re.sub(r"^Hey AETHON,\s*$", "Hey AETHON", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^OK AETHON,\s*$", "OK AETHON", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"^AETHON,\s*$", "AETHON", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip()
+
+    def handle_command(self, raw_text: str, current_perception: Optional[Dict[str, Any]] = None, source: str = "web") -> Dict[str, Any]:
+        if not raw_text or not raw_text.strip():
+            return {
+                "intent": "IGNORE",
+                "response": "",
+                "experiment_state": experiment_manager.get_state(),
+                "conversation": self.conversation_history
+            }
+
+        import time
+        from voice.command_parser.command_parser import has_wake_word
+        has_wake = has_wake_word(raw_text)
+        in_window = self.is_in_active_window()
+
+        # Parse intent early to check if user spoke an experiment command
+        intent = command_parser.parse(raw_text)
+
+        # For physical microphone:
+        # 1. If wake word present -> wake up & respond!
+        # 2. If in active conversation window AND recognized an intent -> respond to follow-up!
+        # 3. Otherwise -> ignore background room chatter
+        if source == "hardware_mic":
+            if not has_wake and not in_window:
+                return {
+                    "intent": "IGNORE",
+                    "response": "",
+                    "experiment_state": experiment_manager.get_state(),
+                    "conversation": self.conversation_history
+                }
+            if not has_wake and in_window and intent == Intent.UNKNOWN:
+                # Check for explicit question / command words before giving guidance
+                has_q = any(q in raw_text.lower() for q in [
+                    "what", "how", "am i", "start", "stop", "reset", "pause", "step", "color", "colour",
+                    "action", "doing", "holding", "repeat", "help", "status", "who", "next", "which",
+                    "procedure", "instruction", "guide", "tell", "explain", "check", "verify"
+                ])
+                if not has_q:
+                    return {
+                        "intent": "IGNORE",
+                        "response": "",
+                        "experiment_state": experiment_manager.get_state(),
+                        "conversation": self.conversation_history
+                    }
+
+        now_t = time.time()
+        self.last_active_time = now_t
+        if has_wake or in_window:
+            self.last_wake_time = now_t
+
         time_str = datetime.now().strftime("%I:%M %p")
+        # Normalize spelling of AETHON in user bubble so chat always displays "AETHON"
+        clean_user_text = self._normalize_aethon_spelling(raw_text)
+
+        # Deduplicate simultaneous duplicate commands across web and hardware mic
+        if hasattr(self, "_last_handled_text") and hasattr(self, "_last_handled_time") and hasattr(self, "_last_handled_source"):
+            if (
+                clean_user_text.lower() == self._last_handled_text.lower()
+                and (now_t - self._last_handled_time) < 1.5
+                and (source != self._last_handled_source or raw_text.lower() == getattr(self, "_last_handled_raw", "").lower())
+            ):
+                return {
+                    "intent": "DUPLICATE",
+                    "response": getattr(self, "_last_handled_response", ""),
+                    "experiment_state": experiment_manager.get_state(),
+                    "conversation": self.conversation_history
+                }
+        self._last_handled_text = clean_user_text
+        self._last_handled_raw = raw_text
+        self._last_handled_source = source
+        self._last_handled_time = now_t
+
         # Add user message
         user_msg = {
             "id": len(self.conversation_history) + 1,
             "role": "user",
             "speaker": "You",
             "time": time_str,
-            "text": raw_text
+            "text": clean_user_text,
+            "source": source
         }
         self.conversation_history.append(user_msg)
-        event_logger.log("VOICE_COMMAND", raw_text, {"raw_text": raw_text})
+        event_logger.log("VOICE_COMMAND", clean_user_text, {"raw_text": raw_text, "source": source})
 
         intent = command_parser.parse(raw_text)
         response_text = ""
@@ -54,8 +158,29 @@ class AethonCommandService:
                 narration_str = action_dict.get("narration", "Monitoring")
 
         if intent == Intent.GREETING:
-            response_text = "Hello, Commander. AETHON is online and ready. How can I assist you today?"
-            tts_service.speak(response_text)
+            lower_text = raw_text.lower()
+            if any(w in lower_text for w in ["who are you", "what is your name", "what are you", "introduce yourself", "about yourself"]):
+                response_text = (
+                    "I am AETHON, your AI Mission Control Assistant. "
+                    "I monitor payload assembly experiments, track object interactions, "
+                    "and ensure step-by-step procedural safety."
+                )
+            elif any(w in lower_text for w in ["how are you", "how are things", "how's it going", "how it going", "what's up", "whats up", "kaise ho", "kya haal", "kya chal"]):
+                response_text = (
+                    "All telemetry systems are nominal and operating smoothly. "
+                    "Ready to monitor your experiment, Commander."
+                )
+            elif any(w in lower_text for w in ["namaste", "namaskar"]):
+                response_text = "Namaste, Commander. AETHON is online and ready for your experiment."
+            elif any(w in lower_text for w in ["thank", "thanks", "appreciate", "good job", "great job"]):
+                response_text = "You're welcome, Commander. Standing by for your next instruction."
+            elif any(w in lower_text for w in ["are you there", "can you hear", "are you listening", "are you ready"]):
+                response_text = "Yes, Commander, I can hear you clearly and all perception systems are active."
+            elif any(w in lower_text for w in ["bye", "goodbye", "see you", "good night", "standby"]):
+                response_text = "Acknowledged. Standing by in monitoring mode. Have a safe mission, Commander."
+                self.last_wake_time = 0.0  # Immediately return to standby
+            else:
+                response_text = "Hello, Commander. AETHON is online and ready. How can I assist you with your experiment today?"
         elif intent == Intent.STATUS:
             exp_state = experiment_manager.get_state()
             exp_status = exp_state.get("status", "IDLE")
@@ -69,11 +194,9 @@ class AethonCommandService:
                 f"{obj_count} object{'s' if obj_count != 1 else ''} tracked. "
                 f"Perception running at {fps} FPS."
             )
-            tts_service.speak(response_text)
         elif intent == Intent.START_EXPERIMENT:
             res = experiment_manager.start()
             response_text = "Experiment started.\nStep 1: Pick up Object A (Red Block)."
-            tts_service.speak(response_text)
         elif intent == Intent.WHAT_AM_I_DOING:
             label = action_dict.get("label", "Idle / Monitoring")
             act_obj = action_dict.get("object", "")
@@ -85,7 +208,6 @@ class AethonCommandService:
                 response_text = f"You are currently {label.lower()}. Interacting with {act_color + ' ' if act_color else ''}{act_obj} while {posture_str.lower()}."
             else:
                 response_text = f"You are currently {posture_str.lower()} and {movement_str.lower()}. No active handheld item detected."
-            tts_service.speak(response_text)
         elif intent == Intent.IDENTIFY_OBJECT:
             act_obj = action_dict.get("object")
             act_col = action_dict.get("color")
@@ -113,7 +235,6 @@ class AethonCommandService:
                     response_text = "Astronaut operator detected. No separate objects currently in the work area."
             else:
                 response_text = "No distinct objects are currently identified in your hands or immediate view. Try holding up a daily item like a phone, bottle, cup, or block."
-            tts_service.speak(response_text)
         elif intent == Intent.IDENTIFY_COLOR:
             act_col = action_dict.get("color")
             act_obj = action_dict.get("object")
@@ -143,22 +264,17 @@ class AethonCommandService:
                     response_text = "Detected items have standard neutral coloration."
             else:
                 response_text = "No objects detected. Hold an everyday item (such as your phone, bottle, or block) in front of the camera to inspect its color."
-            tts_service.speak(response_text)
         elif intent == Intent.WHAT_MOVEMENTS:
             response_text = f"Movement tracked: {movement_str}. Posture: {posture_str}. Activity state: {action_dict.get('label', 'Idle')}."
-            tts_service.speak(response_text)
         elif intent == Intent.NEXT_STEP:
             guidance = experiment_manager.get_guidance()
             response_text = guidance
-            tts_service.speak(guidance)
         elif intent == Intent.CHECK_CURRENT_ACTION:
             check_msg = experiment_manager.check_current_action(action_dict)
             response_text = check_msg
-            tts_service.speak(check_msg)
         elif intent == Intent.REPEAT_STEP:
             step_instruction = experiment_manager.get_current_step_instruction()
             response_text = f"Step {experiment_manager.current_step}: {step_instruction}."
-            tts_service.speak(response_text)
         elif intent == Intent.PAUSE_EXPERIMENT:
             experiment_manager.pause()
             response_text = "Experiment paused."
@@ -178,10 +294,24 @@ class AethonCommandService:
                 "'Am I doing it right?', 'Status report', or control the experiment with "
                 "'Start', 'Pause', 'Resume', 'Reset'."
             )
-            tts_service.speak(response_text)
+        elif intent == Intent.MUTE:
+            response_text = "Voice feedback muted."
+            tts_service.muted = True
         else:
-            # Fallback natural guidance
-            response_text = f"Received: \"{raw_text}\". {experiment_manager.get_guidance()}"
+            # Unrelated question or statement addressed to Aethon
+            response_text = (
+                "I am focused on your experiment mission. Please ask questions related to the experiment, "
+                "assembly procedures, or object tracking. You can say 'Help' for available commands."
+            )
+
+        if intent != Intent.MUTE:
+            tts_service.muted = False
+
+        self._last_handled_response = response_text
+
+        # Output speech via hardware TTS only for standalone non-web commands
+        # (Web client voices responses using high-quality natural neural browser speech)
+        if response_text and not tts_service.muted and source != "web":
             tts_service.speak(response_text)
 
         assistant_msg = {
@@ -189,7 +319,8 @@ class AethonCommandService:
             "role": "assistant",
             "speaker": "Aethon",
             "time": datetime.now().strftime("%I:%M %p"),
-            "text": response_text
+            "text": response_text,
+            "source": source
         }
         self.conversation_history.append(assistant_msg)
         event_logger.log("AETHON_RESPONSE", response_text, {"intent": intent.value})

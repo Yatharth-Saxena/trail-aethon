@@ -6,11 +6,12 @@ from typing import List, Dict, Any, Optional, Generator
 from camera.overlays import draw_perception_overlays
 from recording.recorder import video_recorder
 from streaming.ip_streamer import ip_streamer
-from backend.config import DEFAULT_CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS
+from backend.config import DEFAULT_CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS, CAMERA_MIRROR
 
 class CameraService:
     def __init__(self, camera_index: int = DEFAULT_CAMERA_INDEX):
         self.camera_index = camera_index
+        self.mirror = bool(CAMERA_MIRROR)
         self.cap: Optional[cv2.VideoCapture] = None
         self.is_running = False
         self.hw_thread: Optional[threading.Thread] = None
@@ -84,10 +85,17 @@ class CameraService:
 
     def inject_client_frame(self, frame: np.ndarray):
         """Receives a frame sent by browser webcam and injects it into the perception pipeline."""
+        if self.mirror and frame is not None:
+            frame = cv2.flip(frame, 1)
         with self.lock:
             self._latest_hw_frame = frame
             self._hw_timestamp = time.time()
             self._last_client_frame_time = time.time()
+
+    def toggle_mirror(self) -> bool:
+        """Toggles horizontal mirror/inversion on camera feed."""
+        self.mirror = not self.mirror
+        return self.mirror
 
     def _hw_capture_loop(self):
         """Continuously reads from physical webcam at hardware rate so driver buffer never stalls."""
@@ -103,6 +111,8 @@ class CameraService:
 
                 if ret and frame is not None:
                     failed_count = 0
+                    if self.mirror:
+                        frame = cv2.flip(frame, 1)
                     with self.lock:
                         # Only use physical camera if browser webcam isn't actively providing frames
                         if (time.time() - getattr(self, "_last_client_frame_time", 0.0)) > 2.0:
@@ -124,6 +134,7 @@ class CameraService:
         return {
             "status": "switched",
             "camera_index": self.camera_index,
+            "mirror": self.mirror,
             "cameras": self.list_cameras()
         }
 
