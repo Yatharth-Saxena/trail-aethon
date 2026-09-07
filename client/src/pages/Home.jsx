@@ -212,7 +212,7 @@ export default function Home() {
   const [currentView, setCurrentView] = useState("Monitor");
 
   // Camera & Telemetry state
-  const [fps, setFps] = useState(28);
+  const [fps, setFps] = useState(60);
   const [isRecording, setIsRecording] = useState(false);
   const [cameras, setCameras] = useState([{ index: 0, name: "Camera 0 (USB)", active: true }]);
   const [selectedCamera, setSelectedCamera] = useState(0);
@@ -221,19 +221,190 @@ export default function Home() {
   const [useBrowserWebcam, setUseBrowserWebcam] = useState(false);
   const cameraStageRef = useRef(null);
   const videoRef = useRef(null);
+  const overlayCanvasRef = useRef(null);
+  const latestPerceptionRef = useRef(null);
 
-  // Browser Webcam MediaDevices effect
+  // Browser Webcam MediaDevices & AI streaming pipeline effect
   useEffect(() => {
     let localStream = null;
+    let uploadInterval = null;
+    let animId = null;
+    let isUploading = false;
+    const captureCanvas = document.createElement("canvas");
+
     if (useBrowserWebcam) {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         navigator.mediaDevices
-          .getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } } })
+          .getUserMedia({
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              frameRate: { ideal: 60, min: 30 }
+            }
+          })
           .then((stream) => {
             localStream = stream;
             if (videoRef.current) {
               videoRef.current.srcObject = stream;
             }
+
+            // 1. Frame uploader: sends browser webcam frames to backend AI perception pipeline
+            uploadInterval = setInterval(() => {
+              const video = videoRef.current;
+              if (!video || video.readyState < 2 || isUploading) return;
+              const w = 640;
+              const h = Math.round((video.videoHeight / (video.videoWidth || 1)) * w) || 360;
+              captureCanvas.width = w;
+              captureCanvas.height = h;
+              const ctx = captureCanvas.getContext("2d");
+              if (!ctx) return;
+              ctx.drawImage(video, 0, 0, w, h);
+              captureCanvas.toBlob(
+                (blob) => {
+                  if (!blob) return;
+                  isUploading = true;
+                  fetch(`${API_BASE}/api/camera/upload_frame`, {
+                    method: "POST",
+                    body: blob,
+                    headers: { "Content-Type": "image/jpeg" }
+                  })
+                    .catch(() => {})
+                    .finally(() => {
+                      isUploading = false;
+                    });
+                },
+                "image/jpeg",
+                0.65
+              );
+            }, 50); // ~20 FPS frame ingestion into backend
+
+            // 2. Real-time overlay canvas drawing loop
+            const renderOverlays = () => {
+              const canvas = overlayCanvasRef.current;
+              const video = videoRef.current;
+              if (canvas && video && video.readyState >= 2) {
+                const cw = video.clientWidth;
+                const ch = video.clientHeight;
+                if (canvas.width !== cw || canvas.height !== ch) {
+                  canvas.width = cw;
+                  canvas.height = ch;
+                }
+                const ctx = canvas.getContext("2d");
+                if (ctx) {
+                  ctx.clearRect(0, 0, cw, ch);
+                  const p = latestPerceptionRef.current;
+                  if (p) {
+                    const vw = video.videoWidth || 1280;
+                    const vh = video.videoHeight || 720;
+                    const scaleX = cw / vw;
+                    const scaleY = ch / vh;
+
+                    // Draw MediaPipe Pose Skeleton
+                    if (p.pose && p.pose.landmarks) {
+                      const lms = p.pose.landmarks;
+                      const connections = [
+                        [11, 12], [11, 23], [12, 24], [23, 24],
+                        [11, 13], [13, 15], [12, 14], [14, 16],
+                        [23, 25], [25, 27], [27, 29], [29, 31],
+                        [24, 26], [26, 28], [28, 30], [30, 32],
+                        [11, 0], [12, 0]
+                      ];
+                      ctx.strokeStyle = "rgba(0, 230, 200, 0.75)";
+                      ctx.lineWidth = 2.5;
+                      for (const [p1, p2] of connections) {
+                        if (lms[p1] && lms[p2] && (lms[p1].visibility ?? 1) > 0.25 && (lms[p2].visibility ?? 1) > 0.25) {
+                          ctx.beginPath();
+                          ctx.moveTo(lms[p1].x * scaleX, lms[p1].y * scaleY);
+                          ctx.lineTo(lms[p2].x * scaleX, lms[p2].y * scaleY);
+                          ctx.stroke();
+                        }
+                      }
+                      // Joints
+                      for (const lm of lms) {
+                        if ((lm.visibility ?? 1) > 0.25) {
+                          ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+                          ctx.beginPath();
+                          ctx.arc(lm.x * scaleX, lm.y * scaleY, 3, 0, Math.PI * 2);
+                          ctx.fill();
+                        }
+                      }
+                    }
+
+                    // Draw Objects & Person Bounding Boxes
+                    if (p.objects && p.objects.length > 0) {
+                      for (const obj of p.objects) {
+                        if (!obj.bbox || obj.bbox.length < 4) continue;
+                        const [bx1, by1, bx2, by2] = obj.bbox;
+                        const x = bx1 * scaleX;
+                        const y = by1 * scaleY;
+                        const wBox = (bx2 - bx1) * scaleX;
+                        const hBox = (by2 - by1) * scaleY;
+
+                        const isPerson = (obj.raw_label === "Person" || obj.label === "Person");
+                        const color = isPerson ? "#ffffff" : (obj.color_hex || "#00e6c8");
+
+                        ctx.strokeStyle = isPerson ? "rgba(240, 240, 240, 0.9)" : color;
+                        ctx.lineWidth = isPerson ? 1.5 : 2;
+                        ctx.strokeRect(x, y, wBox, hBox);
+
+                        const labelText = isPerson
+                          ? `ASTRONAUT ${Math.round((obj.confidence || 0.95) * 100)}%`
+                          : `${obj.is_held ? "● HELD: " : ""}${obj.display_name || obj.label}`;
+                        ctx.font = "600 11px Inter, sans-serif";
+                        const tw = ctx.measureText(labelText).width;
+                        const badgeH = 18;
+                        const badgeY = Math.max(0, y - badgeH);
+
+                        ctx.fillStyle = isPerson ? "rgba(20, 25, 30, 0.88)" : color;
+                        ctx.fillRect(x, badgeY, tw + 10, badgeH);
+
+                        ctx.fillStyle = isPerson ? "#ffffff" : "#0d1117";
+                        ctx.fillText(labelText, x + 5, badgeY + 13);
+                      }
+                    } else if (p.person_detected && p.pose && p.pose.bbox) {
+                      // Draw person box from pose bbox if not in objects
+                      const [bx1, by1, bx2, by2] = p.pose.bbox;
+                      const x = bx1 * scaleX;
+                      const y = by1 * scaleY;
+                      const wBox = (bx2 - bx1) * scaleX;
+                      const hBox = (by2 - by1) * scaleY;
+
+                      ctx.strokeStyle = "rgba(240, 240, 240, 0.9)";
+                      ctx.lineWidth = 1.5;
+                      ctx.strokeRect(x, y, wBox, hBox);
+
+                      const labelText = "ASTRONAUT (Active)";
+                      ctx.font = "600 11px Inter, sans-serif";
+                      const tw = ctx.measureText(labelText).width;
+                      const badgeH = 18;
+                      const badgeY = Math.max(0, y - badgeH);
+
+                      ctx.fillStyle = "rgba(20, 25, 30, 0.88)";
+                      ctx.fillRect(x, badgeY, tw + 10, badgeH);
+                      ctx.fillStyle = "#ffffff";
+                      ctx.fillText(labelText, x + 5, badgeY + 13);
+                    }
+
+                    // Top Action Banner HUD
+                    if (p.current_action && p.current_action.action && p.current_action.action !== "MONITORING" && p.current_action.action !== "IDLE") {
+                      const actText = `CURRENT ACTION // ${p.current_action.action}`;
+                      ctx.font = "700 12px Inter, sans-serif";
+                      const aw = ctx.measureText(actText).width;
+                      const ax = (cw - aw) / 2;
+                      ctx.fillStyle = "rgba(10, 15, 20, 0.88)";
+                      ctx.fillRect(ax - 12, 10, aw + 24, 26);
+                      ctx.strokeStyle = "rgba(0, 230, 200, 0.8)";
+                      ctx.lineWidth = 1;
+                      ctx.strokeRect(ax - 12, 10, aw + 24, 26);
+                      ctx.fillStyle = "#00e6c8";
+                      ctx.fillText(actText, ax, 27);
+                    }
+                  }
+                }
+              }
+              animId = requestAnimationFrame(renderOverlays);
+            };
+            animId = requestAnimationFrame(renderOverlays);
           })
           .catch((err) => {
             console.error("[Webcam Error]", err);
@@ -243,6 +414,8 @@ export default function Home() {
       }
     }
     return () => {
+      if (uploadInterval) clearInterval(uploadInterval);
+      if (animId) cancelAnimationFrame(animId);
       if (localStream) {
         localStream.getTracks().forEach((t) => t.stop());
       }
@@ -267,13 +440,7 @@ export default function Home() {
   });
 
   // Perception state
-  const [detectedObjects, setDetectedObjects] = useState([
-    { label: "Person", display_name: "Astronaut (Operator)", confidence: 0.96, colorName: "White", colorClass: "object-white" },
-    { label: "Object A", display_name: "Red Payload Block", confidence: 0.92, colorName: "Red", colorClass: "object-red" },
-    { label: "Object B", display_name: "Wooden Base Target", confidence: 0.91, colorName: "Brown", colorClass: "object-brown" },
-    { label: "Tray", display_name: "Purple Assembly Tray", confidence: 0.87, colorName: "Purple", colorClass: "object-purple" },
-    { label: "Button", display_name: "Yellow Complete Button", confidence: 0.88, colorName: "Yellow", colorClass: "object-yellow" },
-  ]);
+  const [detectedObjects, setDetectedObjects] = useState([]);
 
   const [currentAction, setCurrentAction] = useState({
     action: "IDLE",
@@ -292,13 +459,16 @@ export default function Home() {
   const [voiceMode, setVoiceMode] = useState(true);
   const [assistantDraft, setAssistantDraft] = useState("");
   const [isListening, setIsListening] = useState(false);
+  const [continuousListening, setContinuousListening] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState("idle"); // "idle" | "listening" | "processing" | "wake_detected"
+  const recognitionRef = useRef(null);
   const [messages, setMessages] = useState([
     {
       id: 1,
       role: "assistant",
       speaker: "Aethon",
-      time: "10:23 AM",
-      text: "AETHON online. Ready for Payload Assembly experiment. Say 'Start the experiment' or click Start."
+      time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      text: "AETHON online. Ready for Payload Assembly experiment. Say 'Hey AETHON' or press the mic button to interact."
     }
   ]);
   const chatBottomRef = useRef(null);
@@ -356,7 +526,7 @@ export default function Home() {
 
             if (data.type === "INIT" || data.type === "TELEMETRY") {
               if (data.camera) {
-                if (data.camera.fps !== undefined) setFps(data.camera.fps || 28);
+                if (data.camera.fps !== undefined) setFps(data.camera.fps || 60);
                 if (data.camera.recording !== undefined) setIsRecording(data.camera.recording);
                 if (data.camera.devices) setCameras(data.camera.devices);
                 if (data.camera.device_index !== undefined) setSelectedCamera(data.camera.device_index);
@@ -367,25 +537,30 @@ export default function Home() {
               }
 
               if (data.perception) {
+                latestPerceptionRef.current = data.perception;
                 if (data.perception.current_action) {
                   setCurrentAction(data.perception.current_action);
                 }
-                if (data.perception.objects && data.perception.objects.length > 0) {
-                  const mapped = data.perception.objects.map((obj) => {
-                    const l = obj.label || "Object";
-                    const colName = obj.color || "Neutral";
-                    const disp = obj.display_name || `${colName} ${l}`;
-                    return {
-                      label: l,
-                      display_name: disp,
-                      confidence: obj.confidence || 0.9,
-                      colorName: colName,
-                      held: Boolean(obj.held),
-                      heldBy: obj.held_by || "",
-                      colorClass: getColorClass(colName || l)
-                    };
-                  });
-                  setDetectedObjects(mapped);
+                if (data.perception.objects !== undefined) {
+                  if (data.perception.objects.length > 0) {
+                    const mapped = data.perception.objects.map((obj) => {
+                      const l = obj.label || "Object";
+                      const colName = obj.color || "Neutral";
+                      const disp = obj.display_name || `${colName} ${l}`;
+                      return {
+                        label: l,
+                        display_name: disp,
+                        confidence: obj.confidence || 0.9,
+                        colorName: colName,
+                        held: Boolean(obj.held || obj.is_held),
+                        heldBy: obj.held_by || "",
+                        colorClass: getColorClass(colName || l)
+                      };
+                    });
+                    setDetectedObjects(mapped);
+                  } else {
+                    setDetectedObjects([]);
+                  }
                 }
               }
 
@@ -481,46 +656,178 @@ export default function Home() {
     }
   };
 
-  // Push-to-Talk Speech Recognition / Voice Trigger
+  // Wake-word patterns
+  const WAKE_WORDS = ["hey aethon", "hey ethan", "hey eaton", "aethon", "hey athena", "ok aethon", "okay aethon"];
+
+  const stripWakeWord = (text) => {
+    const lower = text.toLowerCase().trim();
+    for (const ww of WAKE_WORDS) {
+      if (lower.startsWith(ww)) {
+        const rest = text.slice(ww.length).replace(/^[,\s.]+/, "").trim();
+        return { hadWake: true, command: rest };
+      }
+    }
+    return { hadWake: false, command: text.trim() };
+  };
+
+  // Continuous Listening – always-on voice recognition with wake-word
+  const startContinuousListening = useCallback(() => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    // Stop any existing instance
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch (e) {}
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.continuous = true;
+    recognition.maxAlternatives = 1;
+    recognitionRef.current = recognition;
+
+    recognition.onstart = () => {
+      setIsListening(true);
+      setVoiceStatus("listening");
+    };
+
+    recognition.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          const transcript = event.results[i][0].transcript;
+          const { hadWake, command } = stripWakeWord(transcript);
+
+          if (hadWake && command) {
+            setVoiceStatus("processing");
+            sendCommand(command);
+            setTimeout(() => setVoiceStatus("listening"), 1500);
+          } else if (hadWake && !command) {
+            // Just the wake word → acknowledge
+            setVoiceStatus("wake_detected");
+            sendCommand("hello");
+            setTimeout(() => setVoiceStatus("listening"), 1500);
+          }
+          // If no wake word in continuous mode, ignore (ambient noise)
+        }
+      }
+    };
+
+    recognition.onerror = (e) => {
+      if (e.error === "not-allowed") {
+        setContinuousListening(false);
+        setIsListening(false);
+        setVoiceStatus("idle");
+        return;
+      }
+      // Auto-restart on transient errors
+      setVoiceStatus("listening");
+    };
+
+    recognition.onend = () => {
+      // Auto-restart if continuous mode is still enabled
+      if (continuousListening) {
+        setTimeout(() => {
+          try {
+            recognition.start();
+          } catch (e) {
+            setVoiceStatus("idle");
+          }
+        }, 300);
+      } else {
+        setIsListening(false);
+        setVoiceStatus("idle");
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch (e) {
+      setVoiceStatus("idle");
+    }
+  }, [continuousListening, sendCommand]);
+
+  const stopContinuousListening = useCallback(() => {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.abort(); } catch (e) {}
+      recognitionRef.current = null;
+    }
+    setIsListening(false);
+    setVoiceStatus("idle");
+  }, []);
+
+  // Effect: start/stop continuous listening when toggle changes
+  useEffect(() => {
+    if (continuousListening) {
+      startContinuousListening();
+    } else {
+      stopContinuousListening();
+    }
+    return () => {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (e) {}
+      }
+    };
+  }, [continuousListening]);
+
+  // Push-to-Talk Speech Recognition (single-shot, for when continuous mode is OFF)
   const handleMicClick = async () => {
+    if (continuousListening) {
+      // In continuous mode, mic button toggles it off
+      setContinuousListening(false);
+      return;
+    }
+
     if (isListening) {
+      if (recognitionRef.current) {
+        try { recognitionRef.current.abort(); } catch (e) {}
+      }
       setIsListening(false);
+      setVoiceStatus("idle");
       return;
     }
 
     setIsListening(true);
+    setVoiceStatus("listening");
 
-    // Check browser SpeechRecognition API if available
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
       recognition.lang = "en-US";
       recognition.interimResults = false;
       recognition.maxAlternatives = 1;
+      recognitionRef.current = recognition;
 
       recognition.onresult = (event) => {
         const transcript = event.results[0][0].transcript;
         setIsListening(false);
-        sendCommand(transcript);
+        setVoiceStatus("processing");
+        // In push-to-talk, send directly (no wake word needed)
+        const { command } = stripWakeWord(transcript);
+        sendCommand(command || transcript);
+        setTimeout(() => setVoiceStatus("idle"), 1500);
       };
 
       recognition.onerror = () => {
         setIsListening(false);
+        setVoiceStatus("idle");
       };
 
       recognition.onend = () => {
         setIsListening(false);
+        setVoiceStatus("idle");
       };
 
       try {
         recognition.start();
       } catch (err) {
         setIsListening(false);
+        setVoiceStatus("idle");
       }
     } else {
-      // Fallback: prompt push-to-talk command
-      const promptCmd = prompt("Enter voice command (SpeechRecognition offline prompt):", "What's the next step?");
+      const promptCmd = prompt("Enter voice command:", "What's the next step?");
       setIsListening(false);
+      setVoiceStatus("idle");
       if (promptCmd) {
         sendCommand(promptCmd);
       }
@@ -630,7 +937,7 @@ export default function Home() {
   const stepProgress = `${experimentState.progress_percentage || 0}%`;
 
   const cameraDisplayName = useMemo(() => {
-    if (useBrowserWebcam) return "Browser Webcam (Live)";
+    if (useBrowserWebcam) return "Browser Webcam (Live AI Perception)";
     const found = cameras.find((c) => c.index === selectedCamera);
     return found ? found.name : `Camera ${selectedCamera} (AI Stream)`;
   }, [cameras, selectedCamera, useBrowserWebcam]);
@@ -747,13 +1054,19 @@ export default function Home() {
                       data-feed-status="live"
                     >
                       {useBrowserWebcam ? (
-                        <video
-                          ref={videoRef}
-                          autoPlay
-                          playsInline
-                          muted
-                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                        />
+                        <>
+                          <video
+                            ref={videoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                          />
+                          <canvas
+                            ref={overlayCanvasRef}
+                            className="camera-overlay-canvas"
+                          />
+                        </>
                       ) : (
                         <img
                           key={streamKey}
@@ -847,7 +1160,7 @@ export default function Home() {
                                 setShowCameraMenu(false);
                               }}
                             >
-                              Browser Native Webcam (HTML5)
+                              Browser Native Webcam (Live AI Perception)
                             </button>
                           </div>
                         )}
@@ -898,22 +1211,29 @@ export default function Home() {
                   <GlassPanel className="detected-panel">
                     <PanelTitle title="Detected Objects" subtitle="Everyday & experiment items" />
                     <div className="object-list" style={{ maxHeight: 155, overflowY: "auto" }}>
-                      {detectedObjects.map((item, idx) => (
-                        <div className="object-row" key={`${item.label}-${idx}`}>
-                          <span className={`object-swatch ${item.colorClass || item.color || "object-white"}`} />
-                          <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
-                            <span style={{ fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {item.display_name || item.label}
-                            </span>
-                            {item.colorName && (
-                              <span style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                                Color: {item.colorName} {item.held ? `• Held by ${item.heldBy || "hand"}` : ""}
-                              </span>
-                            )}
-                          </div>
-                          <strong>{item.confidence !== undefined ? item.confidence.toFixed(2) : "0.90"}</strong>
+                      {detectedObjects.length === 0 ? (
+                        <div style={{ padding: "24px 12px", textAlign: "center", color: "rgba(255,255,255,0.40)", fontSize: 12, lineHeight: 1.5 }}>
+                          No experiment objects in field of view<br />
+                          <span style={{ fontSize: 10.5, color: "rgba(255,255,255,0.26)" }}>Position apparatus on workspace surface</span>
                         </div>
-                      ))}
+                      ) : (
+                        detectedObjects.map((item, idx) => (
+                          <div className="object-row" key={`${item.label}-${idx}`}>
+                            <span className={`object-swatch ${item.colorClass || item.color || "object-white"}`} />
+                            <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
+                              <span style={{ fontWeight: 500, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {item.display_name || item.label}
+                              </span>
+                              {item.colorName && (
+                                <span style={{ fontSize: 10, color: "rgba(255,255,255,0.5)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                                  Color: {item.colorName} {item.held ? `• Held by ${item.heldBy || "hand"}` : ""}
+                                </span>
+                              )}
+                            </div>
+                            <strong>{item.confidence !== undefined ? item.confidence.toFixed(2) : "0.90"}</strong>
+                          </div>
+                        ))
+                      )}
                     </div>
                   </GlassPanel>
 
@@ -1209,14 +1529,32 @@ export default function Home() {
                 <div className={`waveform ${isListening ? "listening" : ""}`} aria-label="Aethon audio activity">
                   <i /><i /><i /><i /><i /><i /><i /><i />
                 </div>
-                <button
-                  type="button"
-                  className="mode-select"
-                  onClick={() => setVoiceMode(!voiceMode)}
-                >
-                  <Mic size={14} /> {voiceMode ? "Voice" : "Text"}
-                  <ChevronDown size={14} />
-                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className={`mode-select ${continuousListening ? "active" : ""}`}
+                    onClick={() => setContinuousListening(!continuousListening)}
+                    title={continuousListening ? "Stop always listening" : "Enable always-on voice (say 'Hey AETHON')"}
+                    style={{
+                      background: continuousListening ? "rgba(34, 197, 94, 0.25)" : undefined,
+                      border: continuousListening ? "1px solid rgba(34, 197, 94, 0.5)" : undefined,
+                    }}
+                  >
+                    <Mic size={14} style={{ color: continuousListening ? "#22c55e" : undefined }} />
+                    {continuousListening ? "Always On" : "Voice Off"}
+                  </button>
+                  {voiceStatus !== "idle" && (
+                    <span style={{
+                      fontSize: "0.68rem",
+                      color: voiceStatus === "listening" ? "#22c55e" : voiceStatus === "wake_detected" ? "#eab308" : "#3b82f6",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.08em",
+                      animation: "pulse 1.5s ease-in-out infinite"
+                    }}>
+                      {voiceStatus === "listening" ? "● Listening..." : voiceStatus === "wake_detected" ? "★ Wake Detected" : "⟳ Processing"}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="conversation">
@@ -1260,9 +1598,14 @@ export default function Home() {
                 <button
                   type="button"
                   className={`input-mic ${isListening ? "active" : ""}`}
-                  style={{ color: isListening ? "#ef4444" : "inherit" }}
+                  style={{
+                    color: isListening
+                      ? continuousListening ? "#22c55e" : "#ef4444"
+                      : "inherit",
+                    animation: isListening ? "pulse 1.5s ease-in-out infinite" : "none"
+                  }}
                   onClick={handleMicClick}
-                  title="Push to talk"
+                  title={continuousListening ? "Stop always listening" : "Push to talk"}
                 >
                   <Mic size={18} />
                 </button>
@@ -1270,7 +1613,7 @@ export default function Home() {
                   aria-label="Ask Aethon"
                   value={assistantDraft}
                   onChange={(e) => setAssistantDraft(e.target.value)}
-                  placeholder="Type or speak to Aethon..."
+                  placeholder={continuousListening ? "Say 'Hey AETHON' or type..." : "Type or speak to Aethon..."}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") sendCommand(assistantDraft);
                   }}

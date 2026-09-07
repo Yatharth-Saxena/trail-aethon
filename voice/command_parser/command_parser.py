@@ -19,16 +19,43 @@ class Intent(str, Enum):
     RECORD_START = "RECORD_START"
     RECORD_STOP = "RECORD_STOP"
     HELP = "HELP"
+    GREETING = "GREETING"
+    STATUS = "STATUS"
     UNKNOWN = "UNKNOWN"
+
+# Wake-word patterns to strip before intent matching
+WAKE_WORD_PATTERNS = [
+    r"^hey\s+ae?thon\b[,.\s]*",
+    r"^hey\s+ethan\b[,.\s]*",
+    r"^hey\s+eaton\b[,.\s]*",
+    r"^hey\s+athlon\b[,.\s]*",
+    r"^ae?thon\b[,.\s]*",
+    r"^ethan\b[,.\s]*",
+    r"^hey\s+athena\b[,.\s]*",
+    r"^okay\s+ae?thon\b[,.\s]*",
+    r"^ok\s+ae?thon\b[,.\s]*",
+]
 
 class CommandParser:
     def __init__(self):
         self.intent_patterns = [
             (Intent.START_EXPERIMENT, [
                 r"\bstart( the)? experiment\b",
-                r"\bstart\b",
                 r"\bbegin( the)? experiment\b",
-                r"\blaunch experiment\b"
+                r"\blaunch experiment\b",
+                r"\bstart( the)? (test|procedure)\b"
+            ]),
+            (Intent.GREETING, [
+                r"^(hello|hi|hey|howdy|greetings|good morning|good afternoon|good evening)(\s|$|!|\.|,)",
+                r"\bhow are you\b",
+                r"\bwhat'?s up\b"
+            ]),
+            (Intent.STATUS, [
+                r"\bsystem status\b",
+                r"\bstatus report\b",
+                r"\bgive me (a )?status\b",
+                r"\bhow is (everything|the system|aethon)\b",
+                r"\ball systems\b"
             ]),
             (Intent.WHAT_AM_I_DOING, [
                 r"\bwhat( am i| is being| is) doing\b",
@@ -38,7 +65,8 @@ class CommandParser:
                 r"\bcurrent action\b",
                 r"\bdescribe( my)? action\b",
                 r"\bwhat action is (going on|detected)\b",
-                r"\bwhat am i doing right now\b"
+                r"\bwhat am i doing right now\b",
+                r"\bwhat am i doing\b"
             ]),
             (Intent.IDENTIFY_OBJECT, [
                 r"\bwhat is (this|that) object\b",
@@ -49,7 +77,10 @@ class CommandParser:
                 r"\bdetect object\b",
                 r"\bwhich item is this\b",
                 r"\bwhat items? do you see\b",
-                r"\bwhat objects? do you see\b"
+                r"\bwhat objects? do you see\b",
+                r"\bwhat is this\b",
+                r"\bwhat is that\b",
+                r"\bwhat do you see\b"
             ]),
             (Intent.IDENTIFY_COLOR, [
                 r"\bwhat colou?r is (this|that|it)\b",
@@ -76,19 +107,23 @@ class CommandParser:
                 r"\btell me (the )?next step\b",
                 r"\bwhat do i do( next)?\b",
                 r"\bnext procedure\b",
-                r"\bguidance\b"
+                r"\bguidance\b",
+                r"\bwhat step\b",
+                r"\bwhat should i do\b"
             ]),
             (Intent.CHECK_CURRENT_ACTION, [
                 r"\bam i doing (it|this) (right|correctly)\b",
                 r"\bis this (right|correct)\b",
                 r"\bcheck( my)? (step|action)\b",
-                r"\bam i right\b"
+                r"\bam i right\b",
+                r"\bis this correct\b"
             ]),
             (Intent.REPEAT_STEP, [
                 r"\brepeat( the)? (procedure|step|instruction)\b",
                 r"\bsay( that)? again\b",
                 r"\bwhat was (that|the step)\b",
-                r"\brepeat\b"
+                r"\brepeat\b",
+                r"\bcan you repeat\b"
             ]),
             (Intent.PAUSE_EXPERIMENT, [
                 r"\bpause( the)? experiment\b",
@@ -126,16 +161,31 @@ class CommandParser:
             (Intent.HELP, [
                 r"\bhelp\b",
                 r"\bcommands\b",
-                r"\bwhat can you do\b"
+                r"\bwhat can you do\b",
+                r"\bwhat commands\b"
             ])
         ]
+
+    def _strip_wake_word(self, text: str) -> str:
+        """Remove wake-word prefix from the text so intent matching works
+        on the actual command part."""
+        cleaned = text
+        for pattern in WAKE_WORD_PATTERNS:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+        return cleaned
 
     def parse(self, text: str) -> Intent:
         if not text:
             return Intent.UNKNOWN
         cleaned = text.strip().lower()
         # Remove punctuation
-        cleaned = re.sub(r"[^\w\s]", "", cleaned)
+        cleaned = re.sub(r"[^\w\s']", "", cleaned)
+        # Strip wake words
+        cleaned = self._strip_wake_word(cleaned)
+
+        if not cleaned:
+            # Only the wake word was said → treat as greeting
+            return Intent.GREETING
 
         for intent, patterns in self.intent_patterns:
             for pattern in patterns:

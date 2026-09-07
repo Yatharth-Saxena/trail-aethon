@@ -21,9 +21,9 @@ class VideoRecorder:
         self.recording_start_time: Optional[float] = None
         self.width = 1280
         self.height = 720
-        self.fps = 30.0
+        self.fps = 60.0
 
-    def start_recording(self, session_id: Optional[str] = None, width: int = 1280, height: int = 720, fps: float = 30.0) -> Dict[str, Any]:
+    def start_recording(self, session_id: Optional[str] = None, width: int = 1280, height: int = 720, fps: float = 60.0) -> Dict[str, Any]:
         if self.is_recording:
             return {"status": "already_recording", "file": str(self.recording_path)}
 

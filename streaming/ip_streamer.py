@@ -13,7 +13,7 @@ class IPStreamer:
         self.sock = None
         self.lock = threading.Lock()
         self.last_frame_sent = 0
-        self.fps_limit = 20 # Limit network bandwidth
+        self.fps_limit = 60 # High-speed 60 FPS streaming
 
     def configure(self, target_ip: str, target_port: int, enabled: Optional[bool] = None) -> Dict[str, Any]:
         with self.lock:

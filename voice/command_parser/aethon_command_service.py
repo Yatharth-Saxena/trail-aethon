@@ -13,7 +13,7 @@ class AethonCommandService:
                 "role": "assistant",
                 "speaker": "Aethon",
                 "time": datetime.now().strftime("%I:%M %p"),
-                "text": "AETHON online. Ready for Payload Assembly experiment. Say 'Start the experiment' or press Start."
+                "text": "AETHON online. Ready for Payload Assembly experiment. Say 'Hey AETHON' or press the mic button to interact."
             }
         ]
 
@@ -53,7 +53,24 @@ class AethonCommandService:
                 posture_str = action_dict.get("posture", "Seated")
                 narration_str = action_dict.get("narration", "Monitoring")
 
-        if intent == Intent.START_EXPERIMENT:
+        if intent == Intent.GREETING:
+            response_text = "Hello, Commander. AETHON is online and ready. How can I assist you today?"
+            tts_service.speak(response_text)
+        elif intent == Intent.STATUS:
+            exp_state = experiment_manager.get_state()
+            exp_status = exp_state.get("status", "IDLE")
+            person_det = current_perception.get("person_detected", False) if current_perception else False
+            obj_count = len([o for o in objects_list if (o.get("raw_label") or "").lower() != "person"])
+            fps = current_perception.get("fps", 0) if current_perception else 0
+            response_text = (
+                f"AETHON status report: All systems nominal. "
+                f"Experiment status: {exp_status}. "
+                f"{'Person detected' if person_det else 'No person in view'}. "
+                f"{obj_count} object{'s' if obj_count != 1 else ''} tracked. "
+                f"Perception running at {fps} FPS."
+            )
+            tts_service.speak(response_text)
+        elif intent == Intent.START_EXPERIMENT:
             res = experiment_manager.start()
             response_text = "Experiment started.\nStep 1: Pick up Object A (Red Block)."
             tts_service.speak(response_text)
@@ -155,7 +172,12 @@ class AethonCommandService:
             experiment_manager.stop()
             response_text = "Experiment stopped."
         elif intent == Intent.HELP:
-            response_text = "You can ask: 'What am I doing?', 'What is this object?', 'What color is this?', 'What are my movements?', 'What is the next step?', 'Am I doing it right?', or control the experiment."
+            response_text = (
+                "You can say: 'Hey AETHON, what am I doing?', 'What is this object?', "
+                "'What color is this?', 'What are my movements?', 'What is the next step?', "
+                "'Am I doing it right?', 'Status report', or control the experiment with "
+                "'Start', 'Pause', 'Resume', 'Reset'."
+            )
             tts_service.speak(response_text)
         else:
             # Fallback natural guidance

@@ -13,6 +13,13 @@ from experiment.manager import experiment_manager
 from event_logging.event_logger import event_logger
 from backend.config import AI_TARGET_FPS
 
+# ---------------------------------------------------------------------------
+# Warmup guard – skip event emission for the first N frames after experiment
+# start to let the detection pipeline stabilise and avoid false triggers.
+# ---------------------------------------------------------------------------
+WARMUP_FRAMES = 30
+
+
 class PerceptionPipeline:
     def __init__(self):
         self.is_running = False
@@ -25,6 +32,10 @@ class PerceptionPipeline:
         self.latest_interactions: List[Dict[str, Any]] = []
         self.latest_action: Dict[str, Any] = action_recognizer.current_action_display
         self.fps = 0.0
+
+        # Warmup tracking – counts frames since experiment was last started
+        self._frames_since_start: int = 0
+        self._experiment_was_running: bool = False
 
         self.start()
 
@@ -66,25 +77,7 @@ class PerceptionPipeline:
                         ]
                         pose_data["bbox"] = person_bbox
 
-                    # 2. Object Detection on ai_frame
-                    pb_small = None
-                    if person_bbox:
-                        pb_small = [int(v / scale_x) for v in person_bbox]
-                    objects_small = object_detector.detect(ai_frame, person_bbox=pb_small)
-                    objects = []
-                    for obj in objects_small:
-                        ob = obj.get("bbox", [0, 0, 0, 0])
-                        objects.append({
-                            **obj,
-                            "bbox": [
-                                int(ob[0] * scale_x),
-                                int(ob[1] * scale_y),
-                                int(ob[2] * scale_x),
-                                int(ob[3] * scale_y)
-                            ]
-                        })
-
-                    # 3. Hand Tracking on ai_frame
+                    # 2. Hand Tracking on ai_frame (extracted first so detector knows hand locations)
                     hands_small = hand_tracker.process(ai_frame)
                     hands = []
                     for hnd in hands_small:
@@ -96,6 +89,29 @@ class PerceptionPipeline:
                                 int(hb[1] * scale_y),
                                 int(hb[2] * scale_x),
                                 int(hb[3] * scale_y)
+                            ]
+                        })
+
+                    # 3. Object Detection on ai_frame with spatial torso & hand proximity filters
+                    pb_small = None
+                    if person_bbox:
+                        pb_small = [int(v / scale_x) for v in person_bbox]
+                    objects_small = object_detector.detect(
+                        ai_frame,
+                        person_bbox=pb_small,
+                        pose_data=pose_data,
+                        hands=hands_small
+                    )
+                    objects = []
+                    for obj in objects_small:
+                        ob = obj.get("bbox", [0, 0, 0, 0])
+                        objects.append({
+                            **obj,
+                            "bbox": [
+                                int(ob[0] * scale_x),
+                                int(ob[1] * scale_y),
+                                int(ob[2] * scale_x),
+                                int(ob[3] * scale_y)
                             ]
                         })
 
@@ -121,14 +137,34 @@ class PerceptionPipeline:
                     )
 
                     # 6. Feed to Experiment Manager if a discrete event occurred
+                    #    Warmup guard: suppress events for first WARMUP_FRAMES
+                    #    after experiment starts to let detection settle.
+                    exp_running = experiment_manager.experiment_manager.status.value == "RUNNING"
+                    if exp_running and not self._experiment_was_running:
+                        # Experiment just started → reset warmup counter
+                        self._frames_since_start = 0
+                    self._experiment_was_running = exp_running
+
+                    if exp_running:
+                        self._frames_since_start += 1
+
                     if event is not None:
-                        event_logger.log(
-                            "ACTION_DETECTED",
-                            f"{event.event} on {event.object}" + (f" -> {event.target}" if event.target else ""),
-                            event.model_dump()
-                        )
-                        # Process through validator and state machine
-                        experiment_manager.experiment_manager.process_event(event)
+                        if not exp_running or self._frames_since_start > WARMUP_FRAMES:
+                            event_logger.log(
+                                "ACTION_DETECTED",
+                                f"{event.event} on {event.object}" + (f" -> {event.target}" if event.target else ""),
+                                event.model_dump()
+                            )
+                            # Process through validator and state machine
+                            experiment_manager.experiment_manager.process_event(event)
+                        else:
+                            # Suppressed during warmup
+                            event_logger.log(
+                                "ACTION_SUPPRESSED",
+                                f"Warmup frame {self._frames_since_start}/{WARMUP_FRAMES}: "
+                                f"{event.event} on {event.object} suppressed",
+                                {"warmup_frame": self._frames_since_start}
+                            )
 
                 except Exception as e:
                     print(f"[PerceptionPipeline Error] {e}")
@@ -148,14 +184,16 @@ class PerceptionPipeline:
     def get_perception_state(self) -> Dict[str, Any]:
         with self.lock:
             act = self.latest_action or {}
+            has_person = (self.latest_pose is not None) or any(obj.get("raw_label") == "Person" for obj in self.latest_objects)
             return {
                 "fps": self.fps,
                 "objects": self.latest_objects,
                 "hands_count": len(self.latest_hands),
-                "person_detected": self.latest_pose is not None,
+                "person_detected": has_person,
+                "pose": self.latest_pose,
                 "current_action": act,
-                "movement": act.get("movement", "Stationary"),
-                "posture": act.get("posture", "Seated"),
+                "movement": act.get("movement", "Active" if has_person else "Stationary"),
+                "posture": act.get("posture", "Seated" if has_person else "Standby"),
                 "narration": act.get("narration", "Monitoring"),
                 "interactions": self.latest_interactions
             }

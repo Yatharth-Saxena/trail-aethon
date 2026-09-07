@@ -6,20 +6,24 @@ from typing import List, Dict, Any, Optional, Generator
 from camera.overlays import draw_perception_overlays
 from recording.recorder import video_recorder
 from streaming.ip_streamer import ip_streamer
-from backend.config import DEFAULT_CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT
+from backend.config import DEFAULT_CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS
 
 class CameraService:
     def __init__(self, camera_index: int = DEFAULT_CAMERA_INDEX):
         self.camera_index = camera_index
         self.cap: Optional[cv2.VideoCapture] = None
         self.is_running = False
-        self.worker_thread: Optional[threading.Thread] = None
+        self.hw_thread: Optional[threading.Thread] = None
+        self.stream_thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
         
         self.raw_frame: Optional[np.ndarray] = None
         self.annotated_frame: Optional[np.ndarray] = None
+        self._latest_hw_frame: Optional[np.ndarray] = None
+        self._hw_timestamp = 0.0
         
-        self.fps = 0.0
+        self.target_fps = CAMERA_FPS
+        self.fps = float(CAMERA_FPS)
         self.frame_count = 0
         self.fps_timer = time.time()
         
@@ -42,28 +46,77 @@ class CameraService:
             return
         self.is_running = True
         self._init_camera()
-        self.worker_thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self.worker_thread.start()
+        self.hw_thread = threading.Thread(target=self._hw_capture_loop, daemon=True)
+        self.hw_thread.start()
+        self.stream_thread = threading.Thread(target=self._stream_pipeline_loop, daemon=True)
+        self.stream_thread.start()
 
     def _init_camera(self):
         with self.lock:
-            if self.cap is not None:
+            old_cap = self.cap
+            self.cap = None
+            if old_cap is not None:
                 try:
-                    self.cap.release()
+                    old_cap.release()
                 except Exception:
                     pass
             try:
-                self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-                if self.cap.isOpened():
-                    self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-                    self.cap.set(cv2.CAP_PROP_FPS, 30)
+                # Try DirectShow first
+                cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+                    cap.set(cv2.CAP_PROP_FPS, self.target_fps)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    ret, _ = cap.read()
+                    if not ret:
+                        # Fallback to default backend if DSHOW frame read fails
+                        cap.release()
+                        cap = cv2.VideoCapture(self.camera_index)
                 else:
-                    # Fallback standard backend
-                    self.cap = cv2.VideoCapture(self.camera_index)
+                    cap = cv2.VideoCapture(self.camera_index)
+                
+                if cap.isOpened():
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self.cap = cap
             except Exception as e:
                 print(f"[CameraService Error] Failed to open camera {self.camera_index}: {e}")
+
+    def inject_client_frame(self, frame: np.ndarray):
+        """Receives a frame sent by browser webcam and injects it into the perception pipeline."""
+        with self.lock:
+            self._latest_hw_frame = frame
+            self._hw_timestamp = time.time()
+            self._last_client_frame_time = time.time()
+
+    def _hw_capture_loop(self):
+        """Continuously reads from physical webcam at hardware rate so driver buffer never stalls."""
+        failed_count = 0
+        while self.is_running:
+            with self.lock:
+                cap = self.cap
+            if cap is not None and cap.isOpened():
+                try:
+                    ret, frame = cap.read()
+                except Exception:
+                    ret, frame = False, None
+
+                if ret and frame is not None:
+                    failed_count = 0
+                    with self.lock:
+                        # Only use physical camera if browser webcam isn't actively providing frames
+                        if (time.time() - getattr(self, "_last_client_frame_time", 0.0)) > 2.0:
+                            self._latest_hw_frame = frame
+                            self._hw_timestamp = time.time()
+                else:
+                    failed_count += 1
+                    if failed_count > 40:
+                        # Reinitialize camera if read fails repeatedly
+                        failed_count = 0
+                        self._init_camera()
+                    time.sleep(0.01)
+            else:
+                time.sleep(0.05)
 
     def switch_camera(self, new_index: int) -> Dict[str, Any]:
         self.camera_index = int(new_index)
@@ -92,36 +145,31 @@ class CameraService:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.65, (140, 180, 200), 1, cv2.LINE_AA)
         return frame
 
-    def _capture_loop(self):
-        prev_time = time.time()
+    def _stream_pipeline_loop(self):
+        """Paces the camera output at a solid 60 FPS, overlaying annotations and pushing to stream/recorder."""
+        target_interval = 1.0 / self.target_fps
         frames_in_second = 0
+        self.fps_timer = time.time()
 
         while self.is_running:
+            t0 = time.time()
+            now = time.time()
+
+            # Retrieve latest frame (or standby if no camera or stale)
             frame = None
-            if self.cap is not None and self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if not ret or frame is None:
-                    frame = None
+            with self.lock:
+                if self._latest_hw_frame is not None and (now - self._hw_timestamp) < 2.5:
+                    frame = self._latest_hw_frame.copy()
 
             if frame is None:
                 frame = self._generate_standby_frame()
-                time.sleep(0.033)
 
-            # Update FPS
-            now = time.time()
-            frames_in_second += 1
-            if now - self.fps_timer >= 1.0:
-                self.fps = round(frames_in_second / (now - self.fps_timer), 1)
-                frames_in_second = 0
-                self.fps_timer = now
-
+            # Process overlays and assign
             with self.lock:
                 self.raw_frame = frame
-                # Feed frame into recorder & IP streamer
                 video_recorder.add_frame(frame)
                 ip_streamer.send_frame(frame)
 
-                # Render overlays if enabled
                 if self.show_overlays and (self.current_detections or self.current_hands or self.current_action or self.current_pose):
                     self.annotated_frame = draw_perception_overlays(
                         frame,
@@ -133,7 +181,18 @@ class CameraService:
                 else:
                     self.annotated_frame = frame.copy()
 
-            time.sleep(0.005) # Tiny yield
+            frames_in_second += 1
+            if now - self.fps_timer >= 1.0:
+                self.fps = round(frames_in_second / (now - self.fps_timer), 1)
+                frames_in_second = 0
+                self.fps_timer = now
+
+            elapsed = time.time() - t0
+            sleep_needed = target_interval - elapsed
+            if sleep_needed > 0.001:
+                time.sleep(sleep_needed)
+            else:
+                time.sleep(0.0005)
 
     def get_latest_frame(self, annotated: bool = True) -> Optional[np.ndarray]:
         with self.lock:
@@ -165,10 +224,12 @@ class CameraService:
         return None
 
     def generate_mjpeg_stream(self) -> Generator[bytes, None, None]:
+        target_interval = 1.0 / self.target_fps
         while self.is_running:
+            t0 = time.time()
             frame = self.get_latest_frame(annotated=self.show_overlays)
             if frame is not None:
-                ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 if ret:
                     b_data = jpeg.tobytes()
                     header = (
@@ -177,11 +238,19 @@ class CameraService:
                         b'Content-Length: ' + str(len(b_data)).encode('ascii') + b'\r\n\r\n'
                     )
                     yield header + b_data + b'\r\n'
-            time.sleep(0.033) # ~30 FPS
+            elapsed = time.time() - t0
+            sleep_needed = target_interval - elapsed
+            if sleep_needed > 0.001:
+                time.sleep(sleep_needed)
+            else:
+                time.sleep(0.001)
 
     def stop(self):
         self.is_running = False
         if self.cap:
-            self.cap.release()
+            try:
+                self.cap.release()
+            except Exception:
+                pass
 
 camera_service = CameraService()

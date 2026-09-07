@@ -3,9 +3,10 @@ import json
 import asyncio
 import base64
 import cv2
+import numpy as np
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Query, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Query, HTTPException, Request
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -61,7 +62,7 @@ async def broadcast_telemetry():
                 payload = {
                     "type": "TELEMETRY",
                     "camera": {
-                        "fps": round(max(camera_service.fps, perception_pipeline.fps, 28.5), 1),
+                        "fps": round(camera_service.fps if camera_service.fps > 0 else 60.0, 1),
                         "recording": video_recorder.is_recording,
                         "device_index": camera_service.camera_index
                     },
@@ -102,7 +103,7 @@ async def websocket_endpoint(websocket: WebSocket):
         init_payload = {
             "type": "INIT",
             "camera": {
-                "fps": camera_service.fps,
+                "fps": round(camera_service.fps if camera_service.fps > 0 else 60.0, 1),
                 "recording": video_recorder.is_recording,
                 "device_index": camera_service.camera_index,
                 "devices": camera_service.list_cameras()
@@ -145,6 +146,19 @@ async def websocket_endpoint(websocket: WebSocket):
                     frame = camera_service.get_latest_frame(annotated=False)
                     if frame is not None:
                         video_recorder.save_snapshot(frame)
+            elif msg_type == "FRAME":
+                img_b64 = msg.get("image", "")
+                if "," in img_b64:
+                    img_b64 = img_b64.split(",", 1)[1]
+                if img_b64:
+                    try:
+                        raw_bytes = base64.b64decode(img_b64)
+                        np_arr = np.frombuffer(raw_bytes, np.uint8)
+                        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                        if frame is not None:
+                            camera_service.inject_client_frame(frame)
+                    except Exception:
+                        pass
 
     except WebSocketDisconnect:
         if websocket in active_connections:
@@ -186,6 +200,38 @@ def camera_single_frame(annotated: bool = True):
 @app.get("/api/camera/devices")
 def get_camera_devices():
     return {"devices": camera_service.list_cameras(), "current": camera_service.camera_index}
+
+@app.post("/api/camera/upload_frame")
+@app.post("/api/camera/frame")
+async def upload_camera_frame(request: Request):
+    """Allows browser webcam to stream frames to the backend AI perception pipeline."""
+    try:
+        data = await request.body()
+        if not data:
+            return JSONResponse({"status": "error", "message": "No data received"}, status_code=400)
+        
+        content_type = request.headers.get("content-type", "")
+        if "json" in content_type:
+            body = json.loads(data)
+            img_b64 = body.get("image", "")
+            if "," in img_b64:
+                img_b64 = img_b64.split(",", 1)[1]
+            raw_bytes = base64.b64decode(img_b64)
+        else:
+            raw_bytes = data
+            
+        np_arr = np.frombuffer(raw_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        if frame is not None:
+            camera_service.inject_client_frame(frame)
+            has_person = perception_pipeline.latest_pose is not None or any(o.get("raw_label") == "Person" for o in perception_pipeline.latest_objects)
+            return JSONResponse({
+                "status": "ok",
+                "person_detected": has_person
+            })
+        return JSONResponse({"status": "error", "message": "Decode failed"}, status_code=400)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.post("/api/camera/select")
 def select_camera(payload: Dict[str, Any]):

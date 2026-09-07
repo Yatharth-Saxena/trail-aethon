@@ -5,11 +5,25 @@ from collections import deque
 from experiment.state_machine.experiment_state import ExperimentEvent
 from backend.config import ACTION_DEBOUNCE_SECONDS, TEMPORAL_BUFFER_SIZE
 
+# ---------------------------------------------------------------------------
+# Stabilisation constants
+# ---------------------------------------------------------------------------
+# Consecutive frames the same object must be held before an event is emitted.
+HOLD_CONFIRM_FRAMES = 6
+# Minimum detection confidence on the held object before an event is emitted.
+HOLD_CONFIDENCE_GATE = 0.88
+
+
 class ActionRecognizer:
     def __init__(self):
         self.history: deque = deque(maxlen=TEMPORAL_BUFFER_SIZE)
         self.last_triggered_time = 0.0
         self.last_triggered_action = ""
+        self.pickup_counter = 0
+        self.place_counter = 0
+        # Track label consistency across frames
+        self._held_label_streak: str = ""
+        self._held_label_count: int = 0
         self.current_action_display: Dict[str, Any] = {
             "action": "IDLE",
             "label": "Ready / Monitoring",
@@ -27,6 +41,10 @@ class ActionRecognizer:
         self.history.clear()
         self.last_triggered_time = 0.0
         self.last_triggered_action = ""
+        self.pickup_counter = 0
+        self.place_counter = 0
+        self._held_label_streak = ""
+        self._held_label_count = 0
         self.current_action_display = {
             "action": "IDLE",
             "label": "Ready / Monitoring",
@@ -39,6 +57,15 @@ class ActionRecognizer:
             "confidence": 0.90,
             "narration": "Monitoring experiment station. Ready."
         }
+
+    def _is_stable_hold(self, label: str) -> bool:
+        """Return True only when the same label has been held for HOLD_CONFIRM_FRAMES consecutive calls."""
+        if label == self._held_label_streak:
+            self._held_label_count += 1
+        else:
+            self._held_label_streak = label
+            self._held_label_count = 1
+        return self._held_label_count >= HOLD_CONFIRM_FRAMES
 
     def update(
         self,
@@ -109,7 +136,7 @@ class ActionRecognizer:
                         is_waving = True
                         movement_label = f"Waving {elevated_arm_side} Hand"
 
-        # 2. Match Hands with Objects (Holding & Touching Detection)
+        # 2. Match Hands with Objects (Verified Holding & Grasp Detection)
         held_object = None
         holding_hand_side = "Right"
 
@@ -118,6 +145,7 @@ class ActionRecognizer:
             hcx = (h_box[0] + h_box[2]) / 2.0
             hcy = (h_box[1] + h_box[3]) / 2.0
             side = hnd.get("side", "Right")
+            is_pinching = hnd.get("is_pinching", False)
 
             for obj in objects:
                 raw_lbl = obj.get("raw_label", obj.get("label", ""))
@@ -128,18 +156,25 @@ class ActionRecognizer:
                 ocy = (o_box[1] + o_box[3]) / 2.0
 
                 dist = math.hypot(hcx - ocx, hcy - ocy)
-                # Bounding box overlap or close proximity (< 110px)
+                # Bounding box overlap
                 overlap = (
                     h_box[0] < o_box[2] and h_box[2] > o_box[0] and
                     h_box[1] < o_box[3] and h_box[3] > o_box[1]
                 )
-                if overlap or dist < 110:
+                # Genuine hand hold requires either direct bounding overlap or close fingertip contact (<42px)
+                if (overlap and (is_pinching or dist < 55)) or (dist < 40):
                     held_object = obj
                     holding_hand_side = side
                     obj["is_held"] = True
                     break
             if held_object:
                 break
+
+        if not held_object:
+            self.pickup_counter = 0
+            self.place_counter = 0
+            self._held_label_streak = ""
+            self._held_label_count = 0
 
         # 3. Handle Button Pressing
         pressing_interactions = [i for i in interactions if i.get("state") == "PRESSING" and "button" in i.get("object", "").lower()]
@@ -158,10 +193,10 @@ class ActionRecognizer:
                 "narration": f"Astronaut is pressing the Complete Button with their {btn_int['hand']} hand."
             }
             press_count = sum(
-                1 for frame in list(self.history)[-5:]
+                1 for frame in list(self.history)[-7:]
                 if any(i["state"] == "PRESSING" and "button" in i["object"].lower() for i in frame["interactions"])
             )
-            if press_count >= 3 and (now - self.last_triggered_time > ACTION_DEBOUNCE_SECONDS):
+            if press_count >= 4 and (now - self.last_triggered_time > ACTION_DEBOUNCE_SECONDS):
                 self.last_triggered_time = now
                 self.last_triggered_action = "PRESS_BUTTON"
                 return ExperimentEvent(
@@ -177,7 +212,13 @@ class ActionRecognizer:
             raw_lbl = held_object.get("raw_label", held_object.get("label", ""))
             disp_name = held_object.get("label", raw_lbl)
             color_name = held_object.get("color", "")
+            obj_confidence = held_object.get("confidence", 0.0)
             head_data = pose.get("head") if pose else None
+
+            # Check label stability for payload objects before emitting events
+            is_payload = raw_lbl.lower() in ["object a", "object b"]
+            label_stable = self._is_stable_hold(raw_lbl)
+            confidence_ok = obj_confidence >= HOLD_CONFIDENCE_GATE
 
             # Cell Phone
             if "phone" in raw_lbl.lower():
@@ -254,9 +295,6 @@ class ActionRecognizer:
 
             # Payload Object A (Experiment Procedure Tracking)
             elif "object a" in raw_lbl.lower() or "red" in disp_name.lower():
-                # Check displacement and target proximity
-                first_frame = self.history[0] if len(self.history) > 0 else None
-                f_obj = first_frame["objects"].get("Object A") if first_frame else None
                 last_obj = held_object
 
                 target_b = snapshot["objects"].get("Object B")
@@ -268,7 +306,7 @@ class ActionRecognizer:
                     ob_box = last_obj["bbox"]
                     dist = math.hypot((ob_box[0]+ob_box[2])/2 - (tb_box[0]+tb_box[2])/2,
                                       (ob_box[1]+ob_box[3])/2 - (tb_box[1]+tb_box[3])/2)
-                    near_b = dist < 120
+                    near_b = dist < 75
 
                 near_tray = False
                 if target_tray:
@@ -276,9 +314,10 @@ class ActionRecognizer:
                     ob_box = last_obj["bbox"]
                     dist = math.hypot((ob_box[0]+ob_box[2])/2 - (tt_box[0]+tt_box[2])/2,
                                       (ob_box[1]+ob_box[3])/2 - (tt_box[1]+tt_box[3])/2)
-                    near_tray = dist < 150
+                    near_tray = dist < 95
 
                 if near_b:
+                    self.place_counter += 1
                     self.current_action_display = {
                         "action": "PLACE",
                         "label": f"Placing {disp_name} on Object B",
@@ -291,9 +330,12 @@ class ActionRecognizer:
                         "confidence": 0.93,
                         "narration": f"Placing {disp_name} onto Object B."
                     }
-                    if now - self.last_triggered_time > ACTION_DEBOUNCE_SECONDS:
+                    if (self.place_counter >= HOLD_CONFIRM_FRAMES
+                            and label_stable and confidence_ok
+                            and (now - self.last_triggered_time > ACTION_DEBOUNCE_SECONDS)):
                         self.last_triggered_time = now
                         self.last_triggered_action = "PLACE_A_ON_B"
+                        self.place_counter = 0
                         return ExperimentEvent(
                             event="PLACE",
                             object="Object A",
@@ -303,6 +345,7 @@ class ActionRecognizer:
                             confidence=0.94
                         )
                 elif near_tray:
+                    self.place_counter += 1
                     self.current_action_display = {
                         "action": "PLACE",
                         "label": f"Returning {disp_name} to Tray",
@@ -315,9 +358,12 @@ class ActionRecognizer:
                         "confidence": 0.92,
                         "narration": f"Returning {disp_name} to Tray."
                     }
-                    if now - self.last_triggered_time > ACTION_DEBOUNCE_SECONDS:
+                    if (self.place_counter >= HOLD_CONFIRM_FRAMES
+                            and label_stable and confidence_ok
+                            and (now - self.last_triggered_time > ACTION_DEBOUNCE_SECONDS)):
                         self.last_triggered_time = now
                         self.last_triggered_action = "PLACE_A_TRAY"
+                        self.place_counter = 0
                         return ExperimentEvent(
                             event="PLACE",
                             object="Object A",
@@ -327,6 +373,8 @@ class ActionRecognizer:
                             confidence=0.92
                         )
                 else:
+                    self.pickup_counter += 1
+                    self.place_counter = 0
                     self.current_action_display = {
                         "action": "PICK_UP",
                         "label": f"Holding {disp_name} ({holding_hand_side} Hand)",
@@ -339,9 +387,12 @@ class ActionRecognizer:
                         "confidence": 0.94,
                         "narration": f"Astronaut has picked up {disp_name} with their {holding_hand_side.lower()} hand."
                     }
-                    if now - self.last_triggered_time > ACTION_DEBOUNCE_SECONDS:
+                    if (self.pickup_counter >= HOLD_CONFIRM_FRAMES
+                            and label_stable and confidence_ok
+                            and (now - self.last_triggered_time > ACTION_DEBOUNCE_SECONDS)):
                         self.last_triggered_time = now
                         self.last_triggered_action = "PICK_UP_A"
+                        self.pickup_counter = 0
                         return ExperimentEvent(
                             event="PICK_UP",
                             object="Object A",
