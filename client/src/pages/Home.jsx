@@ -97,9 +97,10 @@ function mapPerceptionObject(obj) {
     obj.raw_label === "Person" ||
     obj.label === "Person"
   );
+  const trackId = obj.track_id || 1;
   const l = obj.label || (isAstro ? "Astronaut" : "Object");
   const colName = obj.color || (isAstro ? "EVA Spacesuit" : "Neutral");
-  const disp = isAstro ? "✦ ASTRONAUT #1" : (obj.display_name || `${colName} ${l}`);
+  const disp = isAstro ? (obj.display_name || `✦ ASTRONAUT #${trackId}`) : (obj.display_name || `${colName} ${l}`);
   return {
     label: l,
     raw_label: obj.raw_label || l,
@@ -107,20 +108,23 @@ function mapPerceptionObject(obj) {
     category: isAstro ? "ASTRONAUT" : (obj.category || "PAYLOAD"),
     category_badge: isAstro ? "CREW" : (obj.category_badge || "ITEM"),
     display_name: disp,
-    role: obj.role || (isAstro ? "Mission Operator / EVA Specialist" : ""),
+    role: obj.role || (isAstro ? `Mission Operator #${trackId} / EVA Specialist` : ""),
     confidence: obj.confidence || (isAstro ? 0.98 : 0.90),
     colorName: colName,
     color_hex: isAstro ? "#00e6c8" : (obj.color_hex || "#38bdf8"),
     held: Boolean(obj.held || obj.is_held),
     heldBy: obj.held_by || obj.heldBy || "",
     moving: Boolean(obj.moving || obj.is_moving),
-    velocity: Number(obj.velocity || 0),
-    track_id: obj.track_id || 1,
+    velocity: obj.velocity || 0,
+    track_id: trackId,
     track_status: obj.track_status || "TRACKED",
-    position: obj.position,
+    position: obj.position || null,
+    bbox: obj.bbox || [0, 0, 0, 0],
+    normalized_bbox: obj.normalized_bbox || null,
+    posture: obj.posture || "Seated",
+    action: obj.action || "",
+    activity: obj.activity || "",
     hands: obj.hands || [],
-    skeleton_tracked: Boolean(obj.skeleton_tracked),
-    posture: obj.posture || "",
     colorClass: getColorClass(colName || l)
   };
 }
@@ -3037,7 +3041,7 @@ export default function Home() {
                                           </span>
                                         </div>
                                         <span style={{ fontSize: 10, color: "rgba(255,255,255,0.6)", letterSpacing: "0.02em" }}>
-                                          {item.role || "Operator"} • Posture: {item.posture || currentAction.posture || "Seated"}
+                                          {item.role || "Operator"} • Posture: {item.posture || currentAction.posture || "Seated"}{item.action ? ` • [${item.action}]` : (item.activity ? ` • [${item.activity}]` : "")}
                                         </span>
                                       </div>
                                       <strong style={{ color: "#00e6c8" }}>{item.confidence !== undefined ? item.confidence.toFixed(2) : "0.98"}</strong>
