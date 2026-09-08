@@ -84,7 +84,7 @@ class HandObjectInteraction:
 
             for obj in objects:
                 obj_label = obj.get("label", "")
-                if obj_label.lower() == "person":
+                if obj_label.lower() in ("person", "astronaut") or obj.get("category") == "ASTRONAUT":
                     continue  # The operator's own body box is not an interaction target.
 
                 obj_bbox = obj.get("bbox")

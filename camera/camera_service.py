@@ -61,6 +61,7 @@ class CameraService:
         self._perception_lock = threading.Lock()
         self._jpeg_lock = threading.Condition()
         self._new_frame_event = threading.Event()
+        self._ai_frame_event = threading.Event()
 
         self.raw_frame: Optional[np.ndarray] = None
         self.annotated_frame: Optional[np.ndarray] = None
@@ -89,17 +90,28 @@ class CameraService:
         self.negotiated: Dict[str, Any] = {}
 
         self.show_overlays = True
+        self.client_streaming = False
         self.current_detections: List[Dict[str, Any]] = []
         self.current_hands: List[Dict[str, Any]] = []
         self.current_action: Optional[Dict[str, Any]] = None
+        self.current_pose: Optional[Dict[str, Any]] = None
+        self.current_gestures: Optional[Dict[str, Any]] = None
 
         self.start()
 
-    def list_cameras(self, max_test: int = 2) -> List[Dict[str, Any]]:
-        return [
-            {"index": 0, "name": "Camera 0 (Integrated Webcam)", "active": (self.camera_index == 0)},
-            {"index": 1, "name": "Camera 1 (External 60 FPS USB)", "active": (self.camera_index == 1)}
-        ]
+    def list_cameras(self, max_test: int = 4) -> List[Dict[str, Any]]:
+        cams = []
+        for i in range(max_test):
+            if i == self.camera_index and self.cap is not None and self.cap.isOpened():
+                cams.append({"index": i, "name": f"Camera {i}", "active": True})
+            else:
+                test_cap = cv2.VideoCapture(i)
+                if test_cap.isOpened():
+                    cams.append({"index": i, "name": f"Camera {i}", "active": False})
+                    test_cap.release()
+        if not cams:
+            cams.append({"index": 0, "name": "Camera 0", "active": True})
+        return cams
 
     def start(self):
         if self.is_running:
@@ -248,21 +260,13 @@ class CameraService:
             try:
                 cap = self._try_open_cap(self.camera_index)
                 if cap is None or not cap.isOpened():
-                    # If requested index fails, try fallback index
-                    fallback_idx = 0 if self.camera_index != 0 else 1
-                    cap = self._try_open_cap(fallback_idx)
-                    if cap is not None and cap.isOpened():
-                        print(f"[CameraService] Camera index {self.camera_index} unavailable, fell back to index {fallback_idx}.")
-                        self.camera_index = fallback_idx
-
-                if cap is None or not cap.isOpened():
                     if cap:
                         try:
                             cap.release()
                         except Exception:
                             pass
                     self.cap = None
-                    print(f"[CameraService] No physical camera found at index {self.camera_index}. Standby & browser webcam stream active.")
+                    print(f"[CameraService] Physical camera index {self.camera_index} is unavailable.")
                     return
 
                 opened = self._configure_cap(
@@ -280,7 +284,7 @@ class CameraService:
                 else:
                     cap.release()
                     self.cap = None
-                    print(f"[CameraService] Camera {self.camera_index} opened but could not read frame. Using standby/browser stream.")
+                    print(f"[CameraService] Camera {self.camera_index} opened but could not read frame.")
 
             except Exception as e:
                 print(f"[CameraService Warning] Camera {self.camera_index} probe: {e}")
@@ -288,14 +292,22 @@ class CameraService:
 
     def inject_client_frame(self, frame: np.ndarray):
         """Receives a frame sent by browser webcam and injects it into the perception pipeline."""
-        if self.mirror and frame is not None:
-            frame = cv2.flip(frame, 1)
         now = time.time()
+        self.client_streaming = True
         with self._frame_lock:
             self._latest_hw_frame = frame
             self._hw_timestamp = now
             self._last_client_frame_time = now
             self._new_frame_event.set()
+            self._ai_frame_event.set()
+
+    def clear_client_stream(self):
+        """Called when browser stream stops, camera is unavailable, or client switches away."""
+        with self._frame_lock:
+            self._latest_hw_frame = None
+            self.raw_frame = None
+            self.annotated_frame = None
+            self._hw_timestamp = 0.0
 
     def toggle_mirror(self) -> bool:
         """Toggles horizontal mirror/inversion on camera feed."""
@@ -323,11 +335,12 @@ class CameraService:
                     frame = cv2.flip(frame, 1)
                 now = time.time()
                 with self._frame_lock:
-                    # Only use physical camera if browser webcam isn't actively providing frames
-                    if (now - self._last_client_frame_time) > 2.0:
+                    # If client/browser webcam is the active streaming source, do NOT overwrite with physical hardware capture
+                    if not self.client_streaming:
                         self._latest_hw_frame = frame
                         self._hw_timestamp = now
                         self._new_frame_event.set()
+                        self._ai_frame_event.set()
             else:
                 failed_count += 1
                 if failed_count > 30:
@@ -339,9 +352,12 @@ class CameraService:
                 time.sleep(0.005)
 
     def switch_camera(self, new_index: int) -> Dict[str, Any]:
+        self.client_streaming = False
         self.camera_index = int(new_index)
         with self._frame_lock:
             self._latest_hw_frame = None
+            self.raw_frame = None
+            self.annotated_frame = None
             self._hw_timestamp = 0.0
         self._init_camera()
         return {
@@ -415,13 +431,17 @@ class CameraService:
                 detections = self.current_detections
                 hands = self.current_hands
                 action = self.current_action
+                pose = self.current_pose
+                gestures = self.current_gestures
                 overlays_on = self.show_overlays
 
             video_recorder.add_frame(frame)
             ip_streamer.send_frame(frame)
 
-            if overlays_on and (detections or hands or action):
-                annotated = draw_perception_overlays(frame, detections, hands, action)
+            if overlays_on and (detections or hands or action or pose or gestures):
+                annotated = draw_perception_overlays(
+                    frame, detections, hands, action, pose=pose, gestures=gestures
+                )
             else:
                 annotated = frame
 
@@ -448,6 +468,9 @@ class CameraService:
 
     def get_latest_frame(self, annotated: bool = True) -> Optional[np.ndarray]:
         with self._frame_lock:
+            # If browser client streaming is active but frames have stalled (> 1.2s), return None
+            if self.client_streaming and (time.time() - self._last_client_frame_time) > 1.2:
+                return None
             if annotated and self.annotated_frame is not None:
                 return self.annotated_frame.copy()
             if self.raw_frame is not None:
@@ -466,12 +489,16 @@ class CameraService:
         self,
         detections: List[Dict[str, Any]],
         hands: List[Dict[str, Any]],
-        action: Optional[Dict[str, Any]]
+        action: Optional[Dict[str, Any]],
+        pose: Optional[Dict[str, Any]] = None,
+        gestures: Optional[Dict[str, Any]] = None,
     ):
         with self._perception_lock:
             self.current_detections = detections
             self.current_hands = hands
             self.current_action = action
+            self.current_pose = pose
+            self.current_gestures = gestures
 
     def get_jpeg_frame(self, annotated: bool = True) -> Optional[bytes]:
         frame = self.get_latest_frame(annotated=annotated)

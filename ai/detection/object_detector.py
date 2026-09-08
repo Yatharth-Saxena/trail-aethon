@@ -6,6 +6,7 @@ from collections import deque, Counter
 
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 
 from backend.config import (
@@ -22,6 +23,13 @@ from backend.config import (
     DETECTION_VOTE_WINDOW,
     DETECTION_VOTE_MIN_HITS,
     DETECTION_MAX_MISSES,
+    DETECTION_MAX_MISSES_CONFIRMED,
+    DETECTION_MAX_MISSES_CANDIDATE,
+    PERSON_MIN_ASPECT_RATIO,
+    PERSON_MAX_ASPECT_RATIO,
+    PERSON_MIN_AREA_FRAC,
+    PERSON_MAX_AREA_FRAC,
+    PERSON_CEILING_ZONE_FRAC,
     TRACK_IOU_MATCH,
     TRACK_VOTE_WINDOW,
     OBJECT_MOVING_SPEED,
@@ -29,6 +37,7 @@ from backend.config import (
     OBJECT_MOTION_CONFIRM_FRAMES,
     OBJECT_MOTION_RELEASE_FRAMES,
     OBJECT_MOTION_HISTORY,
+    OBJECT_DOMAIN_TAXONOMY,
 )
 
 # ---------------------------------------------------------------------------
@@ -239,6 +248,133 @@ def _experiment_alias(
 
 
 # ---------------------------------------------------------------------------
+# Multi-Factor Person/Astronaut Validation Helper
+# ---------------------------------------------------------------------------
+def _fuse_person_bbox_with_pose(bbox: List[int], pose: Dict[str, Any], frame_shape: Tuple[int, int]) -> List[int]:
+    """
+    Envelop both the person detection box and visible pose landmarks with slight
+    anatomical padding so that the bounding box tightly, accurately and stably
+    frames the human operator.
+    """
+    h, w = frame_shape
+    lms = pose.get("landmarks", [])
+    valid_pts = []
+    for lm in lms:
+        v = lm.get("visibility", 1.0)
+        if v is not None and v >= 0.28:
+            valid_pts.append((lm["x"] * w, lm["y"] * h))
+    if not valid_pts:
+        return bbox
+
+    pxs = [pt[0] for pt in valid_pts]
+    pys = [pt[1] for pt in valid_pts]
+    pose_min_x = min(pxs)
+    pose_max_x = max(pxs)
+    pose_min_y = min(pys)
+    pose_max_y = max(pys)
+
+    bx1, by1, bx2, by2 = bbox
+    pad_x = max(8, int((bx2 - bx1) * 0.04))
+    pad_y = max(10, int((by2 - by1) * 0.04))
+
+    fx1 = max(0, int(min(bx1, pose_min_x - pad_x)))
+    fy1 = max(0, int(min(by1, pose_min_y - pad_y)))
+    fx2 = min(w - 1, int(max(bx2, pose_max_x + pad_x)))
+    fy2 = min(h - 1, int(max(by2, pose_max_y + pad_y)))
+
+    return [fx1, fy1, fx2, fy2]
+
+
+def _validate_person_candidate(
+    bbox: List[int],
+    confidence: float,
+    frame_shape: Tuple[int, int],
+    hands: Optional[List[Dict[str, Any]]] = None,
+    pose: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Strict multi-factor human gate.
+    Requires:
+    1. Valid human aspect ratio and minimum area.
+    2. Not in the ceiling / upper zone.
+    3. Not a hand bounding box misclassified as a full person.
+    4. Explicit human skeleton / pose corroboration: candidate box MUST contain
+       at least 4 visible pose landmarks (including key upper torso anchors:
+       nose, shoulders, or hips) or have strong IoU/containment with verified pose bbox.
+    If no valid pose exists in frame, candidates are rejected.
+    """
+    h, w = frame_shape
+    frame_area = float(h * w)
+    x1, y1, x2, y2 = bbox
+    box_w = max(1, x2 - x1)
+    box_h = max(1, y2 - y1)
+    area = box_w * box_h
+    aspect_ratio = box_h / float(box_w)
+    area_frac = area / frame_area
+
+    # 1. Aspect ratio check (height / width should be human-like)
+    if aspect_ratio < PERSON_MIN_ASPECT_RATIO or aspect_ratio > PERSON_MAX_ASPECT_RATIO:
+        return False
+
+    # 2. Area fraction check (too small or nearly full frame)
+    if area_frac < PERSON_MIN_AREA_FRAC or area_frac > PERSON_MAX_AREA_FRAC:
+        return False
+
+    # 3. Ceiling zone check: reject ceiling lights / upper background false positives
+    if y2 < 0.38 * h:
+        return False
+    cy = (y1 + y2) / 2.0
+    if cy < PERSON_CEILING_ZONE_FRAC * h:
+        return False
+
+    # 4. Hand-as-person check (hand detection wrongly classified as a full person)
+    if hands:
+        for hnd in hands:
+            hb = hnd.get("bbox")
+            if hb and len(hb) >= 4:
+                if _contains_ratio(bbox, hb) > 0.60 or _iou(bbox, hb) > 0.50:
+                    return False
+
+    # 5. Pose corroboration: MUST have valid human pose/skeleton corroboration
+    if not pose:
+        return False
+
+    visible = pose.get("visible_landmarks_count", 0)
+    if visible < 6:
+        return False
+
+    pose_bbox = pose.get("bbox")
+    if not pose_bbox or len(pose_bbox) < 4:
+        return False
+
+    # Check visible landmarks inside this candidate bbox
+    lms = pose.get("landmarks", [])
+    contained_count = 0
+    key_torso_count = 0
+    for idx, lm in enumerate(lms):
+        v = lm.get("visibility", 1.0)
+        if v is not None and v > 0.28:
+            lx = lm["x"] * w
+            ly = lm["y"] * h
+            if (x1 - 12) <= lx <= (x2 + 12) and (y1 - 12) <= ly <= (y2 + 12):
+                contained_count += 1
+                if idx in (0, 11, 12, 13, 14, 23, 24): # Nose, shoulders, elbows, hips
+                    key_torso_count += 1
+
+    iou_with_pose = _iou(bbox, pose_bbox)
+    contains_pose = _contains_ratio(bbox, pose_bbox)
+    contained_by_pose = _contains_ratio(pose_bbox, bbox)
+
+    has_landmark_evidence = (contained_count >= 4 and key_torso_count >= 1)
+    has_bbox_overlap = (iou_with_pose >= 0.15 or contains_pose >= 0.25 or contained_by_pose >= 0.25)
+
+    if not (has_landmark_evidence or has_bbox_overlap):
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Tracks
 # ---------------------------------------------------------------------------
 class _Track:
@@ -246,13 +382,14 @@ class _Track:
     One tracked object across frames.
 
     Carries the detection-commit vote window, the colour/label vote history,
-    and the centroid history used to estimate whether the object is moving.
+    centroid history for velocity estimation, and velocity extrapolation for occlusions.
     """
 
     __slots__ = (
         "track_id", "bbox", "confidence", "class_label", "misses",
         "last_frame", "hit_window", "color_votes", "alias_votes", "color_conf",
         "centroids", "speed", "moving", "motion_streak", "still_streak",
+        "vx", "vy",
     )
 
     def __init__(self, track_id: int, bbox: List[int], confidence: float, class_label: str, frame_id: int):
@@ -273,6 +410,8 @@ class _Track:
         self.moving = False
         self.motion_streak = 0
         self.still_streak = 0
+        self.vx = 0.0
+        self.vy = 0.0
 
     @property
     def confirmed(self) -> bool:
@@ -288,11 +427,6 @@ class _Track:
         """
         Update the speed estimate and the debounced `moving` flag from the
         centroid history.
-
-        Speed is centroid travel per second as a fraction of frame width, so
-        it does not change meaning with camera resolution. Separate enter and
-        exit thresholds plus streak counters mean brief detector jitter or
-        camera shake cannot flip the flag.
         """
         cx = (self.bbox[0] + self.bbox[2]) / 2.0
         cy = (self.bbox[1] + self.bbox[3]) / 2.0
@@ -308,6 +442,9 @@ class _Track:
         if dt <= 1e-3:
             return
 
+        self.vx = (x1 - x0) / max(1, len(self.centroids) - 1)
+        self.vy = (y1 - y0) / max(1, len(self.centroids) - 1)
+
         travel = math.hypot(x1 - x0, y1 - y0) / max(1, frame_width)
         # Exponential blend keeps the reading steady between frames.
         self.speed = self.speed * 0.4 + (travel / dt) * 0.6
@@ -319,7 +456,6 @@ class _Track:
             self.still_streak += 1
             self.motion_streak = 0
         else:
-            # Between thresholds: hold the current state (hysteresis band).
             return
 
         if not self.moving and self.motion_streak >= OBJECT_MOTION_CONFIRM_FRAMES:
@@ -335,30 +471,23 @@ class CustomObjectDetector:
     than per-frame noise.
     """
 
-    # Per-class labels and confidence floors live in backend/config.py so they
-    # can be tuned without touching detector code.
     YOLO_EVERYDAY_CLASSES: Dict[int, Tuple[str, float]] = OBJECT_CLASS_CONFIDENCE
-
     PERSON_CLASS_ID = 0
 
     def __init__(self):
         self.yolo_model: Optional[YOLO] = None
         self.weights_path: Optional[str] = None
         self.using_custom_weights: bool = False
+        self.device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
         self._init_models()
 
         self._tracks: Dict[str, List[_Track]] = {}   # class label -> tracks
-        self._next_track_id: int = 1
+        self._astronaut_tracks: Dict[int, _Track] = {}  # astronaut track_id -> track
+        self._next_track_id: int = 2
         self._frame_id: int = 0
 
     def _candidate_weights(self) -> List[Path]:
-        """
-        Build the weight search order: fine-tuned weights first (so a model
-        produced by scripts/train_detector.py is used automatically), then any
-        other .pt in models/, then the stock base model.
-        """
         candidates: List[Path] = []
-
         for entry in CUSTOM_DETECTOR_WEIGHTS:
             p = Path(entry)
             candidates.append(p if p.is_absolute() else MODELS_DIR / p)
@@ -390,7 +519,6 @@ class CustomObjectDetector:
 
         if self.yolo_model is None:
             try:
-                # Last resort: let Ultralytics download the base model.
                 self.yolo_model = YOLO(FALLBACK_DETECTOR_WEIGHTS)
                 self.weights_path = FALLBACK_DETECTOR_WEIGHTS
                 print(f"[ObjectDetector] Initialized {FALLBACK_DETECTOR_WEIGHTS} detector")
@@ -398,18 +526,8 @@ class CustomObjectDetector:
                 print(f"[ObjectDetector Warning] Detector initialization fallback: {e}")
                 return
 
-        if not self.using_custom_weights:
-            print(
-                "[ObjectDetector] Using stock COCO weights. For better accuracy on "
-                "payload components, collect frames with scripts/collect_dataset.py "
-                "and fine-tune with scripts/train_detector.py — the resulting "
-                "weights in models/ are picked up automatically on next start."
-            )
         print(f"[ObjectDetector] Inference resolution: imgsz={YOLO_INFERENCE_IMGSZ}")
 
-    # -----------------------------------------------------------------------
-    # Inference
-    # -----------------------------------------------------------------------
     def _run_yolo(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         if self.yolo_model is None:
             return []
@@ -420,13 +538,15 @@ class CustomObjectDetector:
             CONFIDENCE_THRESHOLD_OBJECT,
         )
         try:
+            # Predict all classes unconstrained so any object in frame is detected
             results = self.yolo_model.predict(
                 frame,
-                classes=list(self.YOLO_EVERYDAY_CLASSES.keys()),
+                classes=None,
                 conf=floor_conf,
                 iou=YOLO_NMS_IOU,
                 max_det=YOLO_MAX_DETECTIONS,
                 imgsz=YOLO_INFERENCE_IMGSZ,
+                device=self.device,
                 verbose=False,
             )
         except Exception as e:
@@ -440,10 +560,17 @@ class CustomObjectDetector:
         for box in results[0].boxes:
             cls_id = int(box.cls[0])
             spec = self.YOLO_EVERYDAY_CLASSES.get(cls_id)
-            if spec is None:
-                continue
-            label, min_conf = spec
+            if spec is not None:
+                label, min_conf = spec
+            else:
+                raw_name = self.yolo_model.names.get(cls_id, f"object_{cls_id}")
+                label = raw_name.replace("_", " ").title()
+                min_conf = CONFIDENCE_THRESHOLD_OBJECT
+
             conf = float(box.conf[0])
+            if conf < min_conf:
+                continue
+
             xy = box.xyxy[0].tolist()
             bbox = [
                 max(0, int(xy[0])), max(0, int(xy[1])),
@@ -460,14 +587,12 @@ class CustomObjectDetector:
             })
         return raw
 
-    # -----------------------------------------------------------------------
-    # Association
-    # -----------------------------------------------------------------------
     def _associate(
         self,
         class_label: str,
         candidates: List[Dict[str, Any]],
         frame_width: int,
+        frame_height: int,
         now: float,
     ) -> List[_Track]:
         """Greedy IoU association of *candidates* to the tracks of one class."""
@@ -499,33 +624,103 @@ class CustomObjectDetector:
                 tracks.append(tr)
                 matched.append(tr)
 
-        # Age tracks that received no detection this frame. They still vote, so
-        # a run of misses eventually un-commits the track.
+        # Age tracks that received no detection this frame. Extrapolate bbox for occlusions.
         for tr in unmatched_tracks:
             tr.hit_window.append(0)
             tr.misses += 1
             tr.confidence *= 0.85
+            if tr.confirmed and (abs(tr.vx) > 0.5 or abs(tr.vy) > 0.5):
+                dx, dy = int(tr.vx), int(tr.vy)
+                tr.bbox = [
+                    max(0, tr.bbox[0] + dx),
+                    max(0, tr.bbox[1] + dy),
+                    min(frame_width - 1, tr.bbox[2] + dx),
+                    min(frame_height - 1, tr.bbox[3] + dy),
+                ]
 
         self._tracks[class_label] = [
             tr for tr in tracks
-            if tr.misses <= (DETECTION_MAX_MISSES if tr.confirmed else 1)
+            if tr.misses <= (DETECTION_MAX_MISSES_CONFIRMED if tr.confirmed else DETECTION_MAX_MISSES_CANDIDATE)
         ]
         return matched
 
-    # -----------------------------------------------------------------------
-    # Public API
-    # -----------------------------------------------------------------------
+    def _track_astronauts(
+        self,
+        candidates: List[Dict[str, Any]],
+        frame_width: int,
+        frame_height: int,
+        now: float,
+    ) -> List[_Track]:
+        """
+        Maintains stable identities for each detected astronaut (Person #1, Person #2, etc.).
+        Associates candidates to existing astronaut tracks via IoU and centroid proximity.
+        """
+        unmatched_tracks = list(self._astronaut_tracks.values())
+        matched: List[_Track] = []
+        candidates_sorted = sorted(candidates, key=lambda c: c.get("confidence", 0.0), reverse=True)
+
+        for cand in candidates_sorted:
+            cand_bbox = cand["bbox"]
+            cand_conf = cand.get("confidence", 0.95)
+            best_track, best_score = None, 0.0
+
+            for tr in unmatched_tracks:
+                score = _iou(cand_bbox, tr.bbox)
+                c_dist = math.hypot(
+                    (cand_bbox[0] + cand_bbox[2]) / 2.0 - (tr.bbox[0] + tr.bbox[2]) / 2.0,
+                    (cand_bbox[1] + cand_bbox[3]) / 2.0 - (tr.bbox[1] + tr.bbox[3]) / 2.0,
+                )
+                if score > best_score:
+                    best_track, best_score = tr, score
+                elif best_score < 0.15 and c_dist < max(frame_width, frame_height) * 0.18:
+                    best_track, best_score = tr, 0.20
+
+            if best_track is not None and best_score >= 0.15:
+                unmatched_tracks.remove(best_track)
+                best_track.bbox = _smooth_box(best_track.bbox, cand_bbox)
+                best_track.confidence = max(cand_conf, best_track.confidence * 0.92)
+                best_track.hit_window.append(1)
+                best_track.misses = 0
+                best_track.last_frame = self._frame_id
+                best_track.record_motion(frame_width, now)
+                best_track.pose = cand.get("pose")
+                best_track.posture = cand.get("posture", "Seated")
+                matched.append(best_track)
+            else:
+                existing_ids = set(self._astronaut_tracks.keys())
+                new_id = 1
+                while new_id in existing_ids:
+                    new_id += 1
+                tr = _Track(new_id, cand_bbox, cand_conf, "Astronaut", self._frame_id)
+                tr.hit_window = deque([1, 1], maxlen=DETECTION_VOTE_WINDOW)
+                tr.record_motion(frame_width, now)
+                tr.pose = cand.get("pose")
+                tr.posture = cand.get("posture", "Seated")
+                self._astronaut_tracks[new_id] = tr
+                matched.append(tr)
+
+        # Age tracks that received no detection this frame
+        dead_ids = []
+        for tr in unmatched_tracks:
+            tr.hit_window.append(0)
+            tr.misses += 1
+            tr.confidence *= 0.88
+            if tr.misses > 2:
+                dead_ids.append(tr.track_id)
+
+        for tid in dead_ids:
+            self._astronaut_tracks.pop(tid, None)
+
+        return matched
+
     def detect(
         self,
         frame: np.ndarray,
         hands: Optional[List[Dict[str, Any]]] = None,
+        pose: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Detect the operator and everyday objects in *frame*.
-
-        *hands* are the tracked hands for the same frame (in this frame's
-        coordinate space). They are used to decide whether an object sitting
-        in front of the operator's body is genuinely handheld.
+        Detect all human operators and all everyday objects in *frame* with multi-factor validation.
         """
         self._frame_id += 1
         now = time.time()
@@ -534,12 +729,78 @@ class CustomObjectDetector:
 
         raw = self._run_yolo(frame)
 
-        # Person boxes first: they gate the on-body confidence penalty.
-        person_raw = [
-            d for d in raw
-            if d["cls_id"] == self.PERSON_CLASS_ID and d["confidence"] >= d["min_conf"]
-        ]
-        person_boxes = [d["bbox"] for d in person_raw]
+        # Extract all verified human poses
+        poses: List[Dict[str, Any]] = []
+        if pose:
+            if "all_poses" in pose and isinstance(pose["all_poses"], list):
+                poses = pose["all_poses"]
+            else:
+                poses = [pose]
+        valid_poses = [p for p in poses if p and p.get("visible_landmarks_count", 0) >= 5]
+
+        # 1. Multi-factor Person/Astronaut Validation
+        person_raw = []
+        for d in raw:
+            if d["cls_id"] == self.PERSON_CLASS_ID and d["confidence"] >= max(0.45, d["min_conf"]):
+                if _validate_person_candidate(d["bbox"], d["confidence"], (h, w), hands=hands, pose=pose):
+                    person_raw.append(d)
+
+        # Corroborate valid poses with YOLO person detections
+        corroborated_persons: List[Dict[str, Any]] = []
+        unmatched_yolo = list(person_raw)
+
+        for p_item in valid_poses:
+            pb = p_item.get("bbox")
+            if not pb or len(pb) < 4:
+                continue
+
+            best_yolo, best_score = None, 0.0
+            for yd in unmatched_yolo:
+                iou = _iou(yd["bbox"], pb)
+                contains = _contains_ratio(yd["bbox"], pb)
+                contained = _contains_ratio(pb, yd["bbox"])
+                score = max(iou, contains * 0.7, contained * 0.7)
+                if score > best_score:
+                    best_yolo, best_score = yd, score
+
+            if best_yolo is not None and best_score >= 0.12:
+                unmatched_yolo.remove(best_yolo)
+                fused_box = _fuse_person_bbox_with_pose(best_yolo["bbox"], p_item, (h, w))
+                corroborated_persons.append({
+                    "cls_id": self.PERSON_CLASS_ID,
+                    "class_label": "Astronaut",
+                    "confidence": max(best_yolo["confidence"], 0.95),
+                    "bbox": fused_box,
+                    "min_conf": 0.45,
+                    "pose": p_item,
+                    "posture": p_item.get("posture", "Seated"),
+                })
+            else:
+                # MediaPipe clearly tracks human pose
+                lms = p_item.get("landmarks", [])
+                has_upper = any(
+                    (lms[i].get("visibility", 1.0) or 1.0) >= 0.28
+                    for i in (0, 11, 12) if i < len(lms)
+                )
+                if has_upper:
+                    fused_box = _fuse_person_bbox_with_pose(list(pb), p_item, (h, w))
+                    corroborated_persons.append({
+                        "cls_id": self.PERSON_CLASS_ID,
+                        "class_label": "Astronaut",
+                        "confidence": 0.95,
+                        "bbox": fused_box,
+                        "min_conf": 0.45,
+                        "pose": p_item,
+                        "posture": p_item.get("posture", "Seated"),
+                    })
+
+        # If no human pose is present, purge all astronaut tracks immediately
+        if not valid_poses:
+            self._astronaut_tracks.clear()
+
+        # Track all verified astronauts
+        astro_tracks = self._track_astronauts(corroborated_persons, w, h, now)
+        person_boxes = [list(tr.bbox) for tr in astro_tracks]
 
         def near_hand(bbox: List[int]) -> bool:
             if not hands:
@@ -562,51 +823,67 @@ class CustomObjectDetector:
         def on_body(bbox: List[int]) -> bool:
             return any(_contains_ratio(bbox, pb) > 0.85 for pb in person_boxes)
 
-        # Group surviving detections by class, applying per-class thresholds.
+        # Group surviving detections by class (non-person everyday objects)
         by_class: Dict[str, List[Dict[str, Any]]] = {}
         for det in raw:
-            required = det["min_conf"]
-            if det["cls_id"] != self.PERSON_CLASS_ID:
-                if on_body(det["bbox"]) and not near_hand(det["bbox"]):
-                    required += ON_BODY_CONF_PENALTY
-            if det["confidence"] < required:
+            if det["cls_id"] == self.PERSON_CLASS_ID:
                 continue
-            by_class.setdefault(det["class_label"], []).append(det)
+            required = det["min_conf"]
+            if on_body(det["bbox"]) and not near_hand(det["bbox"]):
+                required += ON_BODY_CONF_PENALTY
+            if det["confidence"] >= required:
+                by_class.setdefault(det["class_label"], []).append(det)
 
-        # Age out classes that disappeared entirely this frame.
+        # Age out classes that disappeared entirely this frame
         for class_label in list(self._tracks.keys()):
             if class_label not in by_class:
-                self._associate(class_label, [], w, now)
+                self._associate(class_label, [], w, h, now)
 
         detections: List[Dict[str, Any]] = []
+
+        # Emit all tracked astronauts
+        for tr in astro_tracks:
+            if not tr.confirmed:
+                continue
+            track_status = "TRACKED" if tr.misses == 0 else "OCCLUDED"
+            cx, cy = int((tr.bbox[0] + tr.bbox[2]) / 2.0), int((tr.bbox[1] + tr.bbox[3]) / 2.0)
+            posture_str = getattr(tr, "posture", "Seated")
+            matched_pose = getattr(tr, "pose", None)
+            detections.append({
+                "label": "Astronaut",
+                "raw_label": "Astronaut",
+                "class_label": "Astronaut",
+                "category": "ASTRONAUT",
+                "category_badge": "CREW",
+                "display_name": f"✦ ASTRONAUT #{tr.track_id}",
+                "role": f"Mission Operator #{tr.track_id} / EVA Specialist",
+                "color": "EVA Spacesuit",
+                "color_hex": "#00e6c8",
+                "confidence": round(min(0.99, tr.confidence), 2),
+                "bbox": list(tr.bbox),
+                "is_held": False,
+                "held": False,
+                "held_by": "",
+                "velocity": round(tr.speed, 4),
+                "is_moving": tr.moving,
+                "moving": tr.moving,
+                "track_id": tr.track_id,
+                "track_status": track_status,
+                "position": {"cx": cx, "cy": cy},
+                "posture": posture_str,
+                "pose": matched_pose,
+                "timestamp": now,
+            })
+
         for class_label, candidates in by_class.items():
-            for tr in self._associate(class_label, candidates, w, now):
+            for tr in self._associate(class_label, candidates, w, h, now):
                 if not tr.confirmed:
                     continue
 
-                if class_label == "Person":
-                    detections.append({
-                        "label": "Person",
-                        "raw_label": "Person",
-                        "class_label": "Person",
-                        "display_name": "Person",
-                        "color": "Suit / Clothes",
-                        "color_hex": "#f0f0f0",
-                        "confidence": round(min(0.99, tr.confidence), 2),
-                        "bbox": list(tr.bbox),
-                        "is_held": False,
-                        "held": False,
-                        "held_by": "",
-                        "velocity": round(tr.speed, 4),
-                        "is_moving": tr.moving,
-                        "moving": tr.moving,
-                        "track_id": tr.track_id,
-                        "timestamp": now,
-                    })
-                    continue
+                track_status = "TRACKED" if tr.misses == 0 else "OCCLUDED"
+                cx, cy = int((tr.bbox[0] + tr.bbox[2]) / 2.0), int((tr.bbox[1] + tr.bbox[3]) / 2.0)
 
-                # Colour is voted over the track's recent history so the name
-                # does not flip between frames.
+                # Colour is voted over the track's recent history
                 sample = extract_dominant_color(frame, tr.bbox)
                 tr.color_votes.append(sample["name"])
                 tr.color_conf = max(tr.color_conf * 0.9, sample["confidence"])
@@ -623,32 +900,56 @@ class CustomObjectDetector:
                 tr.alias_votes.append(alias)
                 alias = tr.majority(tr.alias_votes, None)
 
-                label = alias or class_label
-                if color_name in ("Unknown", None):
-                    display_name = class_label
-                else:
-                    display_name = f"{color_name} {class_label}"
+                # Domain Taxonomy resolution
+                tax = OBJECT_DOMAIN_TAXONOMY.get(class_label.lower(), {})
+                category = tax.get("category", "PAYLOAD")
+                category_badge = tax.get("category_badge", "ITEM")
+                domain_name = tax.get("domain_name")
+
                 if alias:
-                    display_name = f"{alias} ({display_name})"
+                    label = alias
+                    category = "PAYLOAD"
+                    category_badge = "CONTROL" if "Button" in alias else ("TRAY" if "Tray" in alias else "PAYLOAD")
+                    if color_name not in ("Unknown", None):
+                        display_name = f"{alias} ({color_name} {class_label})"
+                    else:
+                        display_name = alias
+                    color_hex = _COLOR_HEX.get(color_name, tax.get("color_hex", "#a855f7"))
+                elif domain_name:
+                    label = domain_name
+                    if color_name not in ("Unknown", None):
+                        display_name = f"{domain_name} ({color_name} {class_label})"
+                    else:
+                        display_name = f"{domain_name} ({class_label})"
+                    color_hex = tax.get("color_hex") or _COLOR_HEX.get(color_name, "#38bdf8")
+                else:
+                    label = class_label
+                    if color_name not in ("Unknown", None):
+                        display_name = f"{color_name} {class_label}"
+                    else:
+                        display_name = class_label
+                    color_hex = _COLOR_HEX.get(color_name, "#38bdf8")
 
                 detections.append({
                     "label": label,
-                    "raw_label": label,
+                    "raw_label": class_label,
                     "class_label": class_label,
+                    "category": category,
+                    "category_badge": category_badge,
                     "display_name": display_name,
                     "color": color_name,
-                    "color_hex": _COLOR_HEX.get(color_name, _COLOR_HEX["Unknown"]),
+                    "color_hex": color_hex,
                     "confidence": round(min(0.99, tr.confidence), 2),
                     "bbox": list(tr.bbox),
                     "is_held": False,
                     "held": False,
                     "held_by": "",
-                    # Centroid speed as a fraction of frame width per second,
-                    # plus the debounced independent-movement flag.
                     "velocity": round(tr.speed, 4),
                     "is_moving": tr.moving,
                     "moving": tr.moving,
                     "track_id": tr.track_id,
+                    "track_status": track_status,
+                    "position": {"cx": cx, "cy": cy},
                     "timestamp": now,
                 })
 
@@ -657,6 +958,7 @@ class CustomObjectDetector:
     def reset(self):
         """Clear all tracks (used when a new experiment run starts)."""
         self._tracks.clear()
+        self._astronaut_tracks.clear()
         self._frame_id = 0
 
     # -----------------------------------------------------------------------
@@ -667,7 +969,7 @@ class CustomObjectDetector:
         Remove near-duplicate boxes across different classes. Per-class
         duplicates are already handled by YOLO's own NMS and by tracking, so
         this only fires when two classes claim almost exactly the same region
-        (e.g. Cup and Bowl on one mug). Person boxes are never suppressed by
+        (e.g. Cup and Bowl on one mug). Astronaut boxes are never suppressed by
         an object box.
         """
         if len(detections) <= 1:
@@ -676,10 +978,11 @@ class CustomObjectDetector:
         dets = sorted(detections, key=lambda d: d["confidence"], reverse=True)
         keep: List[Dict[str, Any]] = []
         for det in dets:
-            is_person = det["class_label"] == "Person"
+            is_astro = det.get("category") == "ASTRONAUT" or det.get("class_label") in ("Person", "Astronaut")
             duplicate = False
             for kept in keep:
-                if (kept["class_label"] == "Person") != is_person:
+                kept_is_astro = kept.get("category") == "ASTRONAUT" or kept.get("class_label") in ("Person", "Astronaut")
+                if kept_is_astro != is_astro:
                     continue
                 if _iou(det["bbox"], kept["bbox"]) > CROSS_CLASS_IOU:
                     duplicate = True

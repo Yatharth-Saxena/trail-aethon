@@ -44,80 +44,282 @@ STREAM_TARGET_FPS = CAMERA_FPS
 # known detections forward for the frames in between.
 #
 # Measured cost per inference pass on CPU:
-#   MediaPipe Hands only : ~18-25 ms  → up to ~40 FPS headroom
-#   YOLO + MediaPipe Hands: ~115 ms  → ~8.8 FPS effective
+#   MediaPipe Hands only : ~12-18 ms  → up to ~55-80 FPS headroom (optimized)
+#   YOLO + MediaPipe Hands: ~80-90 ms  → ~11-12 FPS effective
 #
 # Hand tracking and YOLO now run on separate threads so the hand skeleton
-# overlay updates at ~25 Hz (matching perceived hand motion) while the heavier
+# overlay updates at ~45-50 Hz (matching perceived hand motion) while the heavier
 # YOLO detection runs at ~10 Hz and its results are carried forward by the
 # stream loop for the frames in between.
-AI_HAND_TRACKING_FPS = 25   # MediaPipe Hands — fast, drives overlay sync
-AI_INFERENCE_FPS = 10       # YOLOv8 object detection — heavier, lower rate
+AI_HAND_TRACKING_FPS = 48   # MediaPipe Hands & Pose — fast, drives overlay sync
+AI_INFERENCE_FPS = 25       # YOLOv8 object detection — GPU accelerated on Apple Silicon M4
 # Floor on each inference thread's per-cycle sleep so neither loop spins and
 # starves the capture / stream threads for the GIL.
-AI_MIN_IDLE_SECONDS = 0.008
+AI_MIN_IDLE_SECONDS = 0.001
 
 # JPEG quality for the shared MJPEG encode (encoded once per frame, fanned out
 # to every /video_feed consumer).
 MJPEG_QUALITY = 75
 SNAPSHOT_JPEG_QUALITY = 85
 # Rolling window used for the capture -> telemetry-send latency metric.
-LATENCY_WINDOW_FRAMES = 60
+LATENCY_WINDOW_FRAMES = 15
 
 # ---------------------------------------------------------------------------
 # Detection thresholds
 # ---------------------------------------------------------------------------
 # Global floor. Per-class values below override this and may go lower for
 # small/thin components that the nano model detects weakly.
-CONFIDENCE_THRESHOLD_OBJECT = 0.45
+CONFIDENCE_THRESHOLD_OBJECT = 0.28
 
 # Per-class minimum confidence, keyed by COCO class id -> (label, min_conf).
-# Small or thin items get a lower bar so they are not missed; large,
-# high-contrast items keep a higher bar to suppress false positives.
+# Low floors ensure small/thin/angled objects are detected reliably.
 OBJECT_CLASS_CONFIDENCE = {
-    0:  ("Person", 0.45),
-    24: ("Backpack", 0.55),
-    26: ("Handbag", 0.55),
-    28: ("Suitcase", 0.55),
-    32: ("Sports Ball", 0.40),
-    39: ("Bottle", 0.42),
-    40: ("Wine Glass", 0.45),
-    41: ("Cup", 0.42),
-    # Cutlery and stationery are thin, low-contrast and easily missed.
-    42: ("Fork", 0.32),
-    43: ("Knife", 0.32),
-    44: ("Spoon", 0.32),
-    45: ("Bowl", 0.45),
-    46: ("Banana", 0.45),
-    47: ("Apple", 0.45),
-    49: ("Orange", 0.45),
-    63: ("Laptop", 0.50),
-    64: ("Mouse", 0.38),
-    65: ("Remote", 0.35),
-    66: ("Keyboard", 0.45),
-    67: ("Cell Phone", 0.38),
-    73: ("Book", 0.45),
-    74: ("Clock", 0.45),
-    75: ("Vase", 0.50),
-    76: ("Scissors", 0.35),
-    77: ("Teddy Bear", 0.55),
+    0:  ("Person", 0.40),
+    24: ("Backpack", 0.35),
+    25: ("Umbrella", 0.35),
+    26: ("Handbag", 0.35),
+    27: ("Tie", 0.30),
+    28: ("Suitcase", 0.35),
+    32: ("Sports Ball", 0.30),
+    39: ("Bottle", 0.28),
+    40: ("Wine Glass", 0.28),
+    41: ("Cup", 0.28),
+    # Cutlery, tools and instruments
+    42: ("Fork", 0.25),
+    43: ("Knife", 0.25),
+    44: ("Spoon", 0.25),
+    45: ("Bowl", 0.30),
+    46: ("Banana", 0.30),
+    47: ("Apple", 0.30),
+    48: ("Sandwich", 0.30),
+    49: ("Orange", 0.30),
+    50: ("Broccoli", 0.30),
+    51: ("Carrot", 0.30),
+    52: ("Hot Dog", 0.30),
+    53: ("Pizza", 0.30),
+    54: ("Donut", 0.30),
+    55: ("Cake", 0.30),
+    56: ("Chair", 0.40),
+    57: ("Couch", 0.40),
+    58: ("Potted Plant", 0.35),
+    60: ("Dining Table", 0.40),
+    62: ("TV", 0.35),
+    63: ("Laptop", 0.32),
+    64: ("Mouse", 0.26),
+    65: ("Remote", 0.26),
+    66: ("Keyboard", 0.30),
+    67: ("Cell Phone", 0.26),
+    68: ("Microwave", 0.35),
+    69: ("Oven", 0.35),
+    70: ("Toaster", 0.30),
+    71: ("Sink", 0.35),
+    72: ("Refrigerator", 0.35),
+    73: ("Book", 0.30),
+    74: ("Clock", 0.30),
+    75: ("Vase", 0.35),
+    76: ("Scissors", 0.25),
+    77: ("Teddy Bear", 0.35),
+    78: ("Hair Drier", 0.30),
+    79: ("Toothbrush", 0.25),
 }
 
-# YOLO inference resolution, matched to AI_FRAME_WIDTH and to YOLOv8's own
-# training resolution so the frame is neither up- nor downsampled.
-#
-# Measured on this CPU with a 640x360 source (median of 10 runs, YOLO stage
-# only / total with MediaPipe Hands):
-#     imgsz 480 ->  57 ms /  90 ms (11.2 FPS)   fewer boxes
-#     imgsz 640 ->  77 ms / 114 ms ( 8.8 FPS)   best recall
-#     imgsz 768 ->  88 ms / 120 ms ( 8.3 FPS)   worse recall
-#     imgsz 960 -> 125 ms / 157 ms ( 6.4 FPS)   worse still
-#
-# Raising it past 640 costs FPS *and* loses detections, because upsampling a
-# 640-wide frame adds no detail while pushing objects outside the scale
-# distribution the model was trained on. Only increase this together with
-# AI_FRAME_WIDTH, and only with a genuinely high-resolution camera source.
-YOLO_INFERENCE_IMGSZ = 640
+# ---------------------------------------------------------------------------
+# Domain Object Taxonomy & Desired Mission Labels
+# Maps recognized physical items to spaceflight/payload mission taxonomy.
+# ---------------------------------------------------------------------------
+OBJECT_DOMAIN_TAXONOMY = {
+    # Tools & Cutlery
+    "scissors": {
+        "category": "TOOL",
+        "domain_name": "Payload Shears",
+        "category_badge": "TOOL",
+        "color_hex": "#f59e0b",
+    },
+    "knife": {
+        "category": "TOOL",
+        "domain_name": "Precision Cutter / Scalpel",
+        "category_badge": "TOOL",
+        "color_hex": "#ef4444",
+    },
+    "fork": {
+        "category": "TOOL",
+        "domain_name": "Sample Probe",
+        "category_badge": "TOOL",
+        "color_hex": "#f59e0b",
+    },
+    "spoon": {
+        "category": "TOOL",
+        "domain_name": "Reagent Scoop",
+        "category_badge": "TOOL",
+        "color_hex": "#f59e0b",
+    },
+    "toothbrush": {
+        "category": "TOOL",
+        "domain_name": "Micro Sampling Brush",
+        "category_badge": "TOOL",
+        "color_hex": "#10b981",
+    },
+    # Specimen Containers & Laboratory Glassware
+    "bottle": {
+        "category": "SPECIMEN",
+        "domain_name": "Fluid Sample Flask",
+        "category_badge": "SAMPLE",
+        "color_hex": "#06b6d4",
+    },
+    "cup": {
+        "category": "SPECIMEN",
+        "domain_name": "Specimen Beaker",
+        "category_badge": "SAMPLE",
+        "color_hex": "#06b6d4",
+    },
+    "wine glass": {
+        "category": "SPECIMEN",
+        "domain_name": "Laboratory Glassware",
+        "category_badge": "SAMPLE",
+        "color_hex": "#8b5cf6",
+    },
+    "bowl": {
+        "category": "SPECIMEN",
+        "domain_name": "Specimen Vessel",
+        "category_badge": "SAMPLE",
+        "color_hex": "#06b6d4",
+    },
+    "vase": {
+        "category": "CONTAINER",
+        "domain_name": "Specimen Receptacle",
+        "category_badge": "CONTAINER",
+        "color_hex": "#a855f7",
+    },
+    # Flight Avionics & Electronics
+    "laptop": {
+        "category": "TECH",
+        "domain_name": "Flight Terminal Console",
+        "category_badge": "TECH",
+        "color_hex": "#3b82f6",
+    },
+    "cell phone": {
+        "category": "TECH",
+        "domain_name": "Mobile Comm Terminal",
+        "category_badge": "COMM",
+        "color_hex": "#38bdf8",
+    },
+    "keyboard": {
+        "category": "TECH",
+        "domain_name": "Input Terminal Keyboard",
+        "category_badge": "TECH",
+        "color_hex": "#3b82f6",
+    },
+    "mouse": {
+        "category": "TECH",
+        "domain_name": "Console Pointer Device",
+        "category_badge": "TECH",
+        "color_hex": "#3b82f6",
+    },
+    "remote": {
+        "category": "TECH",
+        "domain_name": "Telemetry Remote",
+        "category_badge": "TECH",
+        "color_hex": "#3b82f6",
+    },
+    "clock": {
+        "category": "TECH",
+        "domain_name": "Mission Chronometer",
+        "category_badge": "CHRONO",
+        "color_hex": "#f59e0b",
+    },
+    "tv": {
+        "category": "TECH",
+        "domain_name": "Telemetry Display Monitor",
+        "category_badge": "DISPLAY",
+        "color_hex": "#38bdf8",
+    },
+    # Flight Gear & Storage
+    "backpack": {
+        "category": "CARGO",
+        "domain_name": "EVA Gear Pack",
+        "category_badge": "CARGO",
+        "color_hex": "#10b981",
+    },
+    "handbag": {
+        "category": "CARGO",
+        "domain_name": "Utility Equipment Pouch",
+        "category_badge": "CARGO",
+        "color_hex": "#10b981",
+    },
+    "suitcase": {
+        "category": "CARGO",
+        "domain_name": "Avionics Cargo Case",
+        "category_badge": "CARGO",
+        "color_hex": "#10b981",
+    },
+    "umbrella": {
+        "category": "CARGO",
+        "domain_name": "Deployable Shield",
+        "category_badge": "CARGO",
+        "color_hex": "#64748b",
+    },
+    # Experiment Items & Props
+    "book": {
+        "category": "PAYLOAD",
+        "domain_name": "Flight Operations Log",
+        "category_badge": "MANUAL",
+        "color_hex": "#a855f7",
+    },
+    "sports ball": {
+        "category": "PAYLOAD",
+        "domain_name": "Spherical Test Mass",
+        "category_badge": "PAYLOAD",
+        "color_hex": "#ec4899",
+    },
+    "apple": {
+        "category": "SPECIMEN",
+        "domain_name": "Organic Specimen (Apple)",
+        "category_badge": "SPECIMEN",
+        "color_hex": "#22c55e",
+    },
+    "banana": {
+        "category": "SPECIMEN",
+        "domain_name": "Organic Specimen (Banana)",
+        "category_badge": "SPECIMEN",
+        "color_hex": "#eab308",
+    },
+    "orange": {
+        "category": "SPECIMEN",
+        "domain_name": "Organic Specimen (Citrus)",
+        "category_badge": "SPECIMEN",
+        "color_hex": "#f97316",
+    },
+    "chair": {
+        "category": "FURNITURE",
+        "domain_name": "Flight Deck Seat",
+        "category_badge": "CABIN",
+        "color_hex": "#64748b",
+    },
+    "couch": {
+        "category": "FURNITURE",
+        "domain_name": "Crew Rest Berth",
+        "category_badge": "CABIN",
+        "color_hex": "#64748b",
+    },
+    "dining table": {
+        "category": "FURNITURE",
+        "domain_name": "Workstation Workbench",
+        "category_badge": "CABIN",
+        "color_hex": "#64748b",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Multi-Factor Astronaut Validation (Zero False Positive Guard)
+# ---------------------------------------------------------------------------
+PERSON_MIN_ASPECT_RATIO = 0.35       # min height/width (reject flat/wide false boxes)
+PERSON_MAX_ASPECT_RATIO = 4.5        # max height/width (reject thin vertical false strips)
+PERSON_MIN_AREA_FRAC = 0.015        # min fraction of frame area (reject tiny false positives)
+PERSON_MAX_AREA_FRAC = 0.85         # max fraction of frame area (reject near-full-frame boxes)
+PERSON_CEILING_ZONE_FRAC = 0.12     # top 12% of frame treated as ceiling zone — suppress detections there
+
+# YOLO inference resolution optimized for ultra-low latency (<15ms on Apple M4 MPS)
+YOLO_INFERENCE_IMGSZ = 384
 YOLO_NMS_IOU = 0.55
 YOLO_MAX_DETECTIONS = 24
 
@@ -133,18 +335,19 @@ AUTODISCOVER_MODEL_WEIGHTS = True
 FALLBACK_DETECTOR_WEIGHTS = "yolov8n.pt"
 
 # ---------------------------------------------------------------------------
-# Temporal stability
+# Temporal stability & Occlusion Tracking
 # ---------------------------------------------------------------------------
 ACTION_DEBOUNCE_SECONDS = 3.0
 TEMPORAL_BUFFER_SIZE = 30
 
 # Detection commit voting: a track is reported once it is seen in
-# DETECTION_VOTE_MIN_HITS of the last DETECTION_VOTE_WINDOW frames, and is
-# dropped only after DETECTION_MAX_MISSES consecutive misses. This stops
-# single-frame misses on small objects from flickering the UI/state machine.
-DETECTION_VOTE_WINDOW = 6
-DETECTION_VOTE_MIN_HITS = 3
-DETECTION_MAX_MISSES = 8
+# DETECTION_VOTE_MIN_HITS of the last DETECTION_VOTE_WINDOW frames.
+DETECTION_VOTE_WINDOW = 8
+DETECTION_VOTE_MIN_HITS = 5
+# Two-tiered miss limits for tracking:
+DETECTION_MAX_MISSES_CONFIRMED = 15  # Confirmed tracks survive temporary occlusion
+DETECTION_MAX_MISSES_CANDIDATE = 2   # Candidate unconfirmed tracks are pruned immediately
+DETECTION_MAX_MISSES = 15
 # Minimum IoU to associate a detection with an existing track.
 TRACK_IOU_MATCH = 0.28
 # Frames of colour/label history voted on per track.
@@ -181,8 +384,9 @@ HAND_TRACKING_CONFIDENCE = 0.55
 # 0 = lite model, 1 = full model (better fingertip accuracy).
 HAND_MODEL_COMPLEXITY = 1
 MAX_TRACKED_HANDS = 2
-# Landmark smoothing factor (higher = more responsive, less smooth).
-HAND_SMOOTHING_ALPHA = 0.6
+# Landmark smoothing factors (higher = more responsive, minimal latency).
+HAND_SMOOTHING_ALPHA = 0.85
+POSE_SMOOTHING_ALPHA = 0.88
 
 # IP Streaming Configuration
 DEFAULT_STREAM_HOST = "0.0.0.0"

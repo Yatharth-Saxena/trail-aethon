@@ -50,41 +50,55 @@ def handle_hardware_voice_command(raw_text: str):
 
 async def broadcast_telemetry():
     """Background task broadcasting real-time perception and experiment state to all connected clients."""
+    last_full_sync = 0.0
     while True:
         try:
             if active_connections:
+                now = time.time()
                 perception = perception_pipeline.get_perception_state()
-                exp_state = experiment_manager.get_state()
-
-                b64_img = ""
                 latency_ms = camera_service.get_pipeline_latency_ms()
 
-                payload = {
-                    "type": "TELEMETRY",
-                    "camera": {
-                        "fps": round(camera_service.fps if camera_service.fps > 0 else 60.0, 1),
-                        "recording": video_recorder.is_recording,
-                        "device_index": camera_service.camera_index,
-                        "mirror": camera_service.mirror,
-                        "latency_ms": latency_ms,
-                        "pipeline_latency_ms": latency_ms,
-                        "negotiated": camera_service.negotiated
-                    },
-                    "perception": perception,
-                    "experiment": exp_state,
-                    "logs": event_logger.get_recent_logs(limit=15),
-                    "image": b64_img,
-                    "conversation": aethon_command_service.get_history(),
-                    "voice": {
-                        "hardware_listening": stt_service.is_listening,
-                        "last_command": stt_service.last_command,
-                        "is_active": aethon_command_service.is_active() or tts_service.is_active
-                    },
-                    "ai": {
-                        "state": "OBSERVING" if exp_state.get("running") else "STANDBY",
-                        "active": True
+                send_full = (now - last_full_sync) > 0.4
+                if send_full:
+                    last_full_sync = now
+                    exp_state = experiment_manager.get_state()
+                    payload = {
+                        "type": "TELEMETRY",
+                        "camera": {
+                            "fps": round(camera_service.fps if camera_service.fps > 0 else 60.0, 1),
+                            "recording": video_recorder.is_recording,
+                            "device_index": camera_service.camera_index,
+                            "mirror": camera_service.mirror,
+                            "latency_ms": latency_ms,
+                            "pipeline_latency_ms": latency_ms,
+                            "negotiated": camera_service.negotiated
+                        },
+                        "perception": perception,
+                        "experiment": exp_state,
+                        "logs": event_logger.get_recent_logs(limit=15),
+                        "image": "",
+                        "conversation": aethon_command_service.get_history(),
+                        "voice": {
+                            "hardware_listening": stt_service.is_listening,
+                            "last_command": stt_service.last_command,
+                            "is_active": aethon_command_service.is_active() or tts_service.is_active
+                        },
+                        "ai": {
+                            "state": "OBSERVING" if exp_state.get("running") else "STANDBY",
+                            "active": True
+                        }
                     }
-                }
+                else:
+                    payload = {
+                        "type": "PERCEPTION",
+                        "perception": perception,
+                        "camera": {
+                            "latency_ms": latency_ms,
+                            "pipeline_latency_ms": latency_ms,
+                            "fps": round(camera_service.fps if camera_service.fps > 0 else 60.0, 1)
+                        }
+                    }
+
                 text_data = json.dumps(payload)
                 disconnected = []
                 for ws in active_connections:
@@ -95,9 +109,9 @@ async def broadcast_telemetry():
                 for ws in disconnected:
                     if ws in active_connections:
                         active_connections.remove(ws)
-        except Exception as e:
+        except Exception:
             pass
-        await asyncio.sleep(0.08) # ~12 Hz telemetry updates
+        await asyncio.sleep(0.010)
 
 @app.on_event("startup")
 async def on_startup():
@@ -131,49 +145,59 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_text(json.dumps(init_payload))
 
         while True:
-            data = await websocket.receive_text()
-            msg = json.loads(data)
-            msg_type = msg.get("type")
+            message = await websocket.receive()
+            if "bytes" in message and message["bytes"]:
+                raw_bytes = message["bytes"]
+                np_arr = np.frombuffer(raw_bytes, np.uint8)
+                frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                if frame is not None:
+                    camera_service.inject_client_frame(frame)
+                continue
 
-            if msg_type == "COMMAND":
-                text = msg.get("text", "")
-                res = aethon_command_service.handle_command(
-                    text,
-                    current_perception=perception_pipeline.get_perception_state()
-                )
-                await websocket.send_text(json.dumps({
-                    "type": "COMMAND_RESPONSE",
-                    "data": res
-                }))
-            elif msg_type == "ACTION":
-                action = msg.get("action")
-                if action == "START":
-                    experiment_manager.start()
-                elif action == "PAUSE":
-                    experiment_manager.pause()
-                elif action == "RESUME":
-                    experiment_manager.resume()
-                elif action == "RESET":
-                    experiment_manager.reset()
-                elif action == "STOP":
-                    experiment_manager.stop()
-                elif action == "SNAPSHOT":
-                    frame = camera_service.get_latest_frame(annotated=False)
-                    if frame is not None:
-                        video_recorder.save_snapshot(frame)
-            elif msg_type == "FRAME":
-                img_b64 = msg.get("image", "")
-                if "," in img_b64:
-                    img_b64 = img_b64.split(",", 1)[1]
-                if img_b64:
-                    try:
-                        raw_bytes = base64.b64decode(img_b64)
-                        np_arr = np.frombuffer(raw_bytes, np.uint8)
-                        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if "text" in message and message["text"]:
+                data = message["text"]
+                msg = json.loads(data)
+                msg_type = msg.get("type")
+
+                if msg_type == "COMMAND":
+                    text = msg.get("text", "")
+                    res = aethon_command_service.handle_command(
+                        text,
+                        current_perception=perception_pipeline.get_perception_state()
+                    )
+                    await websocket.send_text(json.dumps({
+                        "type": "COMMAND_RESPONSE",
+                        "data": res
+                    }))
+                elif msg_type == "ACTION":
+                    action = msg.get("action")
+                    if action == "START":
+                        experiment_manager.start()
+                    elif action == "PAUSE":
+                        experiment_manager.pause()
+                    elif action == "RESUME":
+                        experiment_manager.resume()
+                    elif action == "RESET":
+                        experiment_manager.reset()
+                    elif action == "STOP":
+                        experiment_manager.stop()
+                    elif action == "SNAPSHOT":
+                        frame = camera_service.get_latest_frame(annotated=False)
                         if frame is not None:
-                            camera_service.inject_client_frame(frame)
-                    except Exception:
-                        pass
+                            video_recorder.save_snapshot(frame)
+                elif msg_type == "FRAME":
+                    img_b64 = msg.get("image", "")
+                    if "," in img_b64:
+                        img_b64 = img_b64.split(",", 1)[1]
+                    if img_b64:
+                        try:
+                            raw_bytes = base64.b64decode(img_b64)
+                            np_arr = np.frombuffer(raw_bytes, np.uint8)
+                            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                            if frame is not None:
+                                camera_service.inject_client_frame(frame)
+                        except Exception:
+                            pass
 
     except WebSocketDisconnect:
         if websocket in active_connections:
@@ -246,6 +270,11 @@ async def upload_camera_frame(request: Request):
         return JSONResponse({"status": "error", "message": "Decode failed"}, status_code=400)
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.post("/api/camera/clear_stream")
+def clear_camera_stream():
+    camera_service.clear_client_stream()
+    return {"status": "cleared"}
 
 @app.post("/api/camera/select")
 def select_camera(payload: Dict[str, Any]):

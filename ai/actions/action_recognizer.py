@@ -72,7 +72,7 @@ class ActionRecognizer:
             "label": label,
             "movement": "Stationary",
             "posture": "Seated",
-            "actor": "Astronaut",
+            "actor": "Person",
             "hand": "None",
             "object": "None",
             "color": "None",
@@ -378,12 +378,12 @@ class ActionRecognizer:
                 "label": "Pressing Complete Button",
                 "movement": "Pressing Downwards",
                 "posture": posture_label,
-                "actor": "Astronaut",
+                "actor": "Person",
                 "hand": f"{btn_int['hand']} hand",
                 "object": "Complete Button",
                 "color": "Yellow",
                 "confidence": 0.95,
-                "narration": f"Astronaut is pressing the Complete Button with their {btn_int['hand']} hand."
+                "narration": f"Person is pressing the Complete Button with their {btn_int['hand']} hand."
             }
             press_count = sum(
                 1 for frame in list(self.history)[-7:]
@@ -432,12 +432,12 @@ class ActionRecognizer:
                     "label": f"{action_text} ({holding_hand_side} Hand)",
                     "movement": movement_label,
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": f"{holding_hand_side} hand",
                     "object": disp_name,
                     "color": color_name,
                     "confidence": 0.93,
-                    "narration": f"Astronaut is holding a {disp_name} in their {holding_hand_side.lower()} hand."
+                    "narration": f"Person is holding a {disp_name} in their {holding_hand_side.lower()} hand."
                 }
 
             # Bottle or Cup (Drink or Hold)
@@ -449,12 +449,12 @@ class ActionRecognizer:
                     "label": f"{action_text} ({holding_hand_side} Hand)",
                     "movement": movement_label,
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": f"{holding_hand_side} hand",
                     "object": disp_name,
                     "color": color_name,
                     "confidence": 0.92,
-                    "narration": f"Astronaut is {action_text.lower()}."
+                    "narration": f"Person is {action_text.lower()}."
                 }
 
             # Book / Notebook
@@ -464,12 +464,12 @@ class ActionRecognizer:
                     "label": f"Examining / Holding {disp_name}",
                     "movement": movement_label,
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": f"{holding_hand_side} hand",
                     "object": disp_name,
                     "color": color_name,
                     "confidence": 0.91,
-                    "narration": f"Astronaut is examining {disp_name}."
+                    "narration": f"Person is examining {disp_name}."
                 }
 
             # Scissors / Tool
@@ -479,12 +479,12 @@ class ActionRecognizer:
                     "label": f"Operating {disp_name}",
                     "movement": movement_label,
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": f"{holding_hand_side} hand",
                     "object": disp_name,
                     "color": color_name,
                     "confidence": 0.90,
-                    "narration": f"Astronaut is operating {disp_name} with their {holding_hand_side.lower()} hand."
+                    "narration": f"Person is operating {disp_name} with their {holding_hand_side.lower()} hand."
                 }
 
             # Payload Object A (Experiment Procedure Tracking)
@@ -514,7 +514,7 @@ class ActionRecognizer:
                         "label": f"Placing {disp_name} on Object B",
                         "movement": "Placing Downwards",
                         "posture": posture_label,
-                        "actor": "Astronaut",
+                        "actor": "Person",
                         "hand": f"{holding_hand_side} hand",
                         "object": f"{disp_name} → Object B",
                         "color": color_name,
@@ -542,7 +542,7 @@ class ActionRecognizer:
                         "label": f"Returning {disp_name} to Tray",
                         "movement": "Returning to Surface",
                         "posture": posture_label,
-                        "actor": "Astronaut",
+                        "actor": "Person",
                         "hand": f"{holding_hand_side} hand",
                         "object": f"{disp_name} → Tray",
                         "color": color_name,
@@ -571,12 +571,12 @@ class ActionRecognizer:
                         "label": f"Holding {disp_name} ({holding_hand_side} Hand)",
                         "movement": movement_label,
                         "posture": posture_label,
-                        "actor": "Astronaut",
+                        "actor": "Person",
                         "hand": f"{holding_hand_side} hand",
                         "object": disp_name,
                         "color": color_name,
                         "confidence": 0.94,
-                        "narration": f"Astronaut has picked up {disp_name} with their {holding_hand_side.lower()} hand."
+                        "narration": f"Person has picked up {disp_name} with their {holding_hand_side.lower()} hand."
                     }
                     if (self.pickup_counter >= HOLD_CONFIRM_FRAMES
                             and label_stable and confidence_ok
@@ -599,12 +599,12 @@ class ActionRecognizer:
                     "label": f"Holding {disp_name} in {holding_hand_side} Hand",
                     "movement": movement_label,
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": f"{holding_hand_side} hand",
                     "object": disp_name,
                     "color": color_name,
                     "confidence": 0.91,
-                    "narration": f"Astronaut is holding a {disp_name} in their {holding_hand_side.lower()} hand."
+                    "narration": f"Person is holding a {disp_name} in their {holding_hand_side.lower()} hand."
                 }
 
         # 6. No Object Held -> Independent object motion, else gesture activity
@@ -637,12 +637,12 @@ class ActionRecognizer:
                     "label": f"Waving {raised_side} Hand to Camera",
                     "movement": "Waving Hand",
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": f"{raised_side} hand",
                     "object": "None",
                     "color": "None",
                     "confidence": 0.95,
-                    "narration": f"Astronaut is waving their {raised_side.lower()} hand."
+                    "narration": f"Person is waving their {raised_side.lower()} hand."
                 }
             elif hand_raised:
                 self.current_action_display = {
@@ -650,12 +650,12 @@ class ActionRecognizer:
                     "label": f"Raising {raised_side} Hand",
                     "movement": movement_label,
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": f"{raised_side} hand",
                     "object": "None",
                     "color": "None",
                     "confidence": 0.92,
-                    "narration": f"Astronaut has raised their {raised_side.lower()} arm."
+                    "narration": f"Person has raised their {raised_side.lower()} arm."
                 }
             elif hands and hands_low:
                 # Hands resting/typing in front of the workstation controls
@@ -664,12 +664,12 @@ class ActionRecognizer:
                     "label": "Typing / Operating Workstation Controls",
                     "movement": "Hand Dexterity / Typing",
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": "Both hands" if len(hands) > 1 else f"{hands[0].get('side', 'Right')} hand",
                     "object": "Workstation Controls",
                     "color": "None",
                     "confidence": 0.90,
-                    "narration": "Astronaut is operating workstation controls."
+                    "narration": "Person is operating workstation controls."
                 }
             else:
                 self.current_action_display = {
@@ -677,12 +677,12 @@ class ActionRecognizer:
                     "label": "Monitoring / Seated at Workstation",
                     "movement": movement_label if hands else "Stationary",
                     "posture": posture_label,
-                    "actor": "Astronaut",
+                    "actor": "Person",
                     "hand": "None",
                     "object": "None",
                     "color": "None",
                     "confidence": 0.92,
-                    "narration": "Astronaut is seated attentively at the workstation."
+                    "narration": "Person is seated attentively at the workstation."
                 }
 
         # Attach the object-motion signal to whichever action was selected, so

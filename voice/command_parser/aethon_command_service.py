@@ -4,6 +4,7 @@ from voice.command_parser.command_parser import command_parser, Intent
 from experiment.manager.experiment_manager import experiment_manager
 from voice.text_to_speech.tts import tts_service
 from event_logging.event_logger import event_logger
+from voice.llm.ollama_client import query_ollama, build_perception_context, is_ollama_available
 
 class AethonCommandService:
     def __init__(self):
@@ -134,232 +135,64 @@ class AethonCommandService:
         self.conversation_history.append(user_msg)
         event_logger.log("VOICE_COMMAND", clean_user_text, {"raw_text": raw_text, "source": source})
 
-        intent = command_parser.parse(raw_text)
-        response_text = ""
+        # Trigger experiment state actions & dashboard UI signals if keywords are present
+        lower_cmd = raw_text.lower()
+        action_signal = None
 
-        # Extract perception details
-        action_dict = {}
-        objects_list = []
-        movement_str = "Stationary"
-        posture_str = "Seated"
-        narration_str = "Monitoring"
-
-        if isinstance(current_perception, dict):
-            if "current_action" in current_perception and isinstance(current_perception["current_action"], dict):
-                action_dict = current_perception["current_action"]
-                objects_list = current_perception.get("objects", [])
-                movement_str = current_perception.get("movement", action_dict.get("movement", "Stationary"))
-                posture_str = current_perception.get("posture", action_dict.get("posture", "Seated"))
-                narration_str = current_perception.get("narration", action_dict.get("narration", "Monitoring"))
-            else:
-                action_dict = current_perception
-                movement_str = action_dict.get("movement", "Stationary")
-                posture_str = action_dict.get("posture", "Seated")
-                narration_str = action_dict.get("narration", "Monitoring")
-
-        if intent == Intent.GREETING:
-            lower_text = raw_text.lower()
-            if any(w in lower_text for w in ["who created you", "who made you", "who built you", "who developed you", "isro"]):
-                response_text = (
-                    "I was developed for space robotics and payload missions under the ISRO initiative to assist "
-                    "astronauts and mission specialists with precise procedural guidance."
-                )
-            elif any(w in lower_text for w in ["who are you", "what is your name", "what are you", "introduce yourself", "about yourself"]):
-                response_text = (
-                    "I am AETHON, your AI Mission Control Assistant. "
-                    "I monitor payload assembly experiments, track object interactions, "
-                    "and ensure step-by-step procedural safety."
-                )
-            elif any(w in lower_text for w in ["how are you", "how are things", "how's it going", "how it going", "what's up", "whats up", "kaise ho", "kya haal", "kya chal"]):
-                response_text = (
-                    "All telemetry systems are nominal and operating smoothly. "
-                    "Ready to monitor your experiment, Commander."
-                )
-            elif any(w in lower_text for w in ["namaste", "namaskar"]):
-                response_text = "Namaste, Commander. AETHON is online and ready for your experiment."
-            elif any(w in lower_text for w in ["thank", "thanks", "appreciate", "good job", "great job"]):
-                response_text = "You're welcome, Commander. Standing by for your next instruction."
-            elif any(w in lower_text for w in ["are you there", "can you hear", "are you listening", "are you ready"]):
-                response_text = "Yes, Commander, I can hear you clearly and all perception systems are active."
-            elif any(w in lower_text for w in ["bye", "goodbye", "see you", "good night", "standby"]):
-                response_text = "Acknowledged. Standing by in monitoring mode. Have a safe mission, Commander."
-                self.last_wake_time = 0.0  # Immediately return to standby
-            else:
-                response_text = "Hello, Commander. AETHON is online and ready. How can I assist you with your experiment today?"
-        elif intent == Intent.STATUS:
-            exp_state = experiment_manager.get_state()
-            exp_status = exp_state.get("status", "IDLE")
-            person_det = current_perception.get("person_detected", False) if current_perception else False
-            obj_count = len([o for o in objects_list if (o.get("raw_label") or "").lower() != "person"])
-            fps = current_perception.get("fps", 0) if current_perception else 0
-            response_text = (
-                f"AETHON status report: All systems nominal. "
-                f"Experiment status: {exp_status}. "
-                f"{'Person detected' if person_det else 'No person in view'}. "
-                f"{obj_count} object{'s' if obj_count != 1 else ''} tracked. "
-                f"Perception running at {fps} FPS."
-            )
-        elif intent == Intent.START_EXPERIMENT:
-            res = experiment_manager.start()
-            response_text = "Experiment started.\nStep 1: Pick up Object A (Red Block)."
-        elif intent == Intent.WHAT_AM_I_DOING:
-            label = action_dict.get("label", "Idle / Monitoring")
-            act_obj = action_dict.get("object", "")
-            act_color = action_dict.get("color", "")
-            
-            if narration_str and narration_str not in ("Monitoring", "Standing", "Seated"):
-                response_text = f"Action detected: {narration_str} Movement: {movement_str} ({posture_str})."
-            elif act_obj:
-                response_text = f"You are currently {label.lower()}. Interacting with {act_color + ' ' if act_color else ''}{act_obj} while {posture_str.lower()}."
-            else:
-                response_text = f"You are currently {posture_str.lower()} and {movement_str.lower()}. No active handheld item detected."
-        elif intent == Intent.IDENTIFY_OBJECT:
-            act_obj = action_dict.get("object")
-            act_col = action_dict.get("color")
-            if act_obj in (None, "None", "", "none"):
-                act_obj = None
-            if act_col in (None, "None", "", "none"):
-                act_col = None
-            held_objs = [o for o in objects_list if o.get("held")]
-            
-            if held_objs:
-                held = held_objs[0]
-                hand = held.get("held_by", "hand")
-                response_text = f"You are holding a {held.get('display_name', held.get('label'))} in your {hand}."
-            elif act_obj:
-                response_text = f"Active object: {act_col + ' ' if act_col else ''}{act_obj}."
-            elif objects_list:
-                item_names = [
-                    o.get("display_name") or f"{o.get('color', '')} {o.get('label', '')}".strip()
-                    for o in objects_list
-                    if (o.get("label") or "").lower() not in ("person", "astronaut")
-                ]
-                if item_names:
-                    response_text = f"I detect: {', '.join(item_names[:4])} in the work area."
-                else:
-                    response_text = "Astronaut operator detected. No separate objects currently in the work area."
-            else:
-                response_text = "No distinct objects are currently identified in your hands or immediate view. Try holding up a daily item like a phone, bottle, cup, or block."
-        elif intent == Intent.IDENTIFY_COLOR:
-            act_col = action_dict.get("color")
-            act_obj = action_dict.get("object")
-            if act_obj in (None, "None", "", "none"):
-                act_obj = None
-            if act_col in (None, "None", "", "none"):
-                act_col = None
-            held_objs = [o for o in objects_list if o.get("held")]
-            
-            if held_objs:
-                h = held_objs[0]
-                response_text = f"The {h.get('label')} in your {h.get('held_by', 'hand')} is {h.get('color')}."
-            elif act_col and act_obj:
-                response_text = f"The {act_obj} is {act_col}."
-            elif objects_list:
-                colors_desc = []
-                for o in objects_list:
-                    lbl = o.get("raw_label") or o.get("label") or "item"
-                    if lbl.lower() in ("person", "astronaut"):
-                        continue
-                    col = o.get("color")
-                    if col and col not in ("Neutral", "Unknown"):
-                        colors_desc.append(f"{lbl} is {col}")
-                if colors_desc:
-                    response_text = f"Identified colors: {', '.join(colors_desc[:4])}."
-                else:
-                    response_text = "Detected items have standard neutral coloration."
-            else:
-                response_text = "No objects detected. Hold an everyday item (such as your phone, bottle, or block) in front of the camera to inspect its color."
-        elif intent == Intent.WHAT_MOVEMENTS:
-            response_text = f"Movement tracked: {movement_str}. Posture: {posture_str}. Activity state: {action_dict.get('label', 'Idle')}."
-        elif intent == Intent.NEXT_STEP:
-            guidance = experiment_manager.get_guidance()
-            response_text = guidance
-        elif intent == Intent.CHECK_CURRENT_ACTION:
-            check_msg = experiment_manager.check_current_action(action_dict)
-            response_text = check_msg
-        elif intent == Intent.REPEAT_STEP:
-            step_instruction = experiment_manager.get_current_step_instruction()
-            response_text = f"Step {experiment_manager.current_step}: {step_instruction}."
-        elif intent == Intent.PAUSE_EXPERIMENT:
+        if "start" in lower_cmd and "experiment" in lower_cmd:
+            experiment_manager.start()
+            action_signal = "START_EXPERIMENT"
+        elif "pause" in lower_cmd and "experiment" in lower_cmd:
             experiment_manager.pause()
-            response_text = "Experiment paused."
-        elif intent == Intent.RESUME_EXPERIMENT:
+            action_signal = "PAUSE_EXPERIMENT"
+        elif "resume" in lower_cmd and "experiment" in lower_cmd:
             experiment_manager.resume()
-            response_text = f"Resumed. Step {experiment_manager.current_step}: {experiment_manager.get_current_step_instruction()}."
-        elif intent == Intent.RESET_EXPERIMENT:
+            action_signal = "RESUME_EXPERIMENT"
+        elif "reset" in lower_cmd and "experiment" in lower_cmd:
             experiment_manager.reset()
-            response_text = "Experiment has been reset to Step 1."
-        elif intent == Intent.STOP_EXPERIMENT:
+            action_signal = "RESET_EXPERIMENT"
+        elif "stop" in lower_cmd and "experiment" in lower_cmd:
             experiment_manager.stop()
-            response_text = "Experiment stopped."
-        elif intent == Intent.HELP:
-            response_text = (
-                "You can ask: 'What is the mission?', 'Show all steps', 'What is my progress?', "
-                "'Which hand am I using?', 'Safety check', 'What am I doing?', 'What is this object?', "
-                "'What color is this?', 'What are my movements?', 'What is the next step?', or control with "
-                "'Start', 'Pause', 'Resume', and 'Reset'."
-            )
-        elif intent == Intent.MISSION_DETAILS:
-            response_text = (
-                "The Payload Assembly mission evaluates procedural precision for spaceflight hardware. "
-                "Your objective is to pick up Object A, position it on Object B, verify alignment, "
-                "return it to the assembly tray, and press the Complete Button."
-            )
-        elif intent == Intent.PROCEDURE_OVERVIEW:
-            response_text = (
-                "Here is the complete 5-step procedure: "
-                "1) Pick up Object A (Red Block). "
-                "2) Place Object A on Object B (Target Block). "
-                "3) Pick up Object A again. "
-                "4) Return Object A to Tray. "
-                "5) Press the Complete Button to conclude."
-            )
-        elif intent == Intent.PROGRESS:
-            exp_state = experiment_manager.get_state()
-            curr = exp_state.get("current_step", 1)
-            total = exp_state.get("total_steps", 5)
-            pct = exp_state.get("progress_percentage", 0)
-            status_label = exp_state.get("status", "IDLE")
-            response_text = (
-                f"Mission progress: {pct}% complete. "
-                f"Currently on Step {curr} of {total} ({status_label}). "
-                f"Target instruction: {exp_state.get('next_step_label', 'Pick up Object A')}."
-            )
-        elif intent == Intent.SAFETY_CHECK:
-            response_text = (
-                "Safety envelope check nominal. Active camera and hand tracking are verified. "
-                "Ensure a stable grip on payload components, avoid rapid hand sweeps, "
-                "and confirm component seating before release."
-            )
-        elif intent == Intent.WHICH_HAND:
-            hand = action_dict.get("hand")
-            if not hand or hand in ("None", "none", ""):
-                hand = "Right hand (or both hands within work volume)"
-            response_text = f"Perception tracking indicates you are manipulating with your {hand}."
-        elif intent == Intent.SPEED_CHECK:
-            response_text = f"Movement velocity: {movement_str}. Posture: {posture_str}. Manipulator speed is within nominal operating tolerances."
-        elif intent == Intent.FUN_FACT:
-            response_text = (
-                "Space fact: In microgravity aboard the space station, liquids don't pour—surface "
-                "tension pulls fluids into floating spheres! That's why precise sealed payload assembly is critical."
-            )
-        elif intent == Intent.MUTE:
-            response_text = "Voice feedback muted."
-            tts_service.muted = True
-        else:
-            # Unrelated question or statement addressed to Aethon
-            response_text = (
-                "I am focused on your experiment mission. Please ask questions related to the experiment, "
-                "assembly procedures, or object tracking. You can say 'Help' for available commands."
-            )
+            action_signal = "STOP_EXPERIMENT"
+        elif "log" in lower_cmd or "logs" in lower_cmd:
+            action_signal = "SHOW_LOGS"
+        elif "monitor" in lower_cmd or "camera feed" in lower_cmd:
+            action_signal = "SHOW_MONITOR"
+        elif "step" in lower_cmd or "experiment view" in lower_cmd:
+            action_signal = "SHOW_EXPERIMENT"
+        elif "snapshot" in lower_cmd or "take photo" in lower_cmd or "picture" in lower_cmd:
+            action_signal = "TAKE_SNAPSHOT"
+        elif "start recording" in lower_cmd or "record video" in lower_cmd:
+            action_signal = "RECORD_START"
+        elif "stop recording" in lower_cmd:
+            action_signal = "RECORD_STOP"
 
-        if intent == Intent.MUTE:
-            tts_service.muted = True
+        # Check if user ONLY said the wake word ("AETHON" / "Ethan") without a command
+        from voice.command_parser.command_parser import strip_wake_word
+        cmd_only = strip_wake_word(clean_user_text).strip()
+
+        if not cmd_only:
+            response_text = "AETHON online. Standing by, Commander. How can I assist you with your mission?"
+        else:
+            # Query the trained Ollama Qwen2.5:3b model for ALL voice responses
+            try:
+                perception_ctx = build_perception_context(current_perception)
+                llm_response = query_ollama(
+                    user_message=clean_user_text,
+                    context=perception_ctx,
+                    conversation_history=self.conversation_history[-8:],
+                    timeout=35,
+                )
+                response_text = llm_response
+            except Exception as e:
+                print(f"[AETHON LLM] Fallback triggered: {e}")
+                response_text = (
+                    "AETHON standing by, Commander. All perception and mission control systems remain active."
+                )
 
         self._last_handled_response = response_text
 
-        # Output speech via hardware TTS only for standalone non-web commands (and only when explicitly unmuted)
-        # Web client voices responses using high-quality natural neural streaming speech
+        # Speak response via hardware TTS for standalone hardware mic commands
         if response_text and not tts_service.muted and source == "hardware_mic":
             tts_service.speak(response_text)
 
@@ -372,10 +205,11 @@ class AethonCommandService:
             "source": source
         }
         self.conversation_history.append(assistant_msg)
-        event_logger.log("AETHON_RESPONSE", response_text, {"intent": intent.value})
+        event_logger.log("AETHON_RESPONSE", response_text, {"source": source, "action": action_signal})
 
         return {
-            "intent": intent.value,
+            "intent": "LLM_RESPONSE",
+            "action": action_signal,
             "response": response_text,
             "experiment_state": experiment_manager.get_state(),
             "conversation": self.conversation_history
