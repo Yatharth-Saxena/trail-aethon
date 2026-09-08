@@ -12,8 +12,15 @@ def test_wake_word_stripping():
     """The wake phrase must be removed, leaving only the command text."""
     assert strip_wake_word("hey aethon what's the next step") == "what's the next step"
     assert strip_wake_word("Hey AETHON, what is the next step") == "what is the next step"
+    assert strip_wake_word("Hey AETHON: what is the next step") == "what is the next step"
     assert strip_wake_word("aethon start the experiment") == "start the experiment"
     assert strip_wake_word("ok aethon pause the experiment") == "pause the experiment"
+    assert strip_wake_word("hey aethon stop experiment") == "stop experiment"
+    assert strip_wake_word("hey aethon what are my movements") == "what are my movements"
+    assert strip_wake_word("hey aethon am i doing it right") == "am i doing it right"
+    assert strip_wake_word("hey aethon reset the experiment") == "reset the experiment"
+    assert strip_wake_word("HEY AETHON what is this object") == "what is this object"
+    assert strip_wake_word("hey   aethon   pause the experiment") == "pause the experiment"
 
     # Misheard pronunciations strip just as well.
     assert strip_wake_word("hey than what am i doing") == "what am i doing"
@@ -116,7 +123,7 @@ def test_unrelated_queries_and_service():
     assert "nominal" in res3["response"]
 
     # Hardware mic with wake word + unrelated query returns fixed response
-    res4 = aethon_command_service.handle_command("Hey Aethon, tell me a joke", source="hardware_mic")
+    res4 = aethon_command_service.handle_command("Hey Aethon, order me a pizza", source="hardware_mic")
     assert "focused on your experiment mission" in res4["response"]
 
     # Hardware mic with ambient chatter without wake word is ignored
@@ -176,3 +183,64 @@ def test_misheard_wake_word_pronunciations():
     res_thanks = aethon_command_service.handle_command("hey thanks", source="hardware_mic")
     assert res_thanks["intent"] == "GREETING"
     assert "Commander" in res_thanks["response"]
+
+
+def test_new_question_intents():
+    from voice.command_parser.aethon_command_service import aethon_command_service
+
+    # 1. Mission details
+    assert command_parser.parse("What is the mission?") == Intent.MISSION_DETAILS
+    assert command_parser.parse("Explain the mission") == Intent.MISSION_DETAILS
+    res = aethon_command_service.handle_command("What is the mission?", source="web")
+    assert res["intent"] == "MISSION_DETAILS"
+    assert "Payload Assembly" in res["response"]
+
+    # 2. Procedure overview / list steps
+    assert command_parser.parse("Show all steps") == Intent.PROCEDURE_OVERVIEW
+    assert command_parser.parse("List all steps") == Intent.PROCEDURE_OVERVIEW
+    res = aethon_command_service.handle_command("Show all steps", source="web")
+    assert res["intent"] == "PROCEDURE_OVERVIEW"
+    assert "step" in res["response"].lower()
+
+    # 3. Progress check
+    assert command_parser.parse("What is my progress?") == Intent.PROGRESS
+    assert command_parser.parse("How many steps left?") == Intent.PROGRESS
+    res = aethon_command_service.handle_command("What is my progress?", source="web")
+    assert res["intent"] == "PROGRESS"
+    assert "completed" in res["response"] or "progress" in res["response"]
+
+    # 4. Safety check
+    assert command_parser.parse("Safety check") == Intent.SAFETY_CHECK
+    assert command_parser.parse("What are the safety rules?") == Intent.SAFETY_CHECK
+    res = aethon_command_service.handle_command("Safety check", source="web")
+    assert res["intent"] == "SAFETY_CHECK"
+    assert "Safety" in res["response"]
+
+    # 5. Which hand
+    assert command_parser.parse("Which hand am I using?") == Intent.WHICH_HAND
+    assert command_parser.parse("What hand is detected?") == Intent.WHICH_HAND
+    res = aethon_command_service.handle_command("Which hand am I using?", source="web")
+    assert res["intent"] == "WHICH_HAND"
+    assert "hand" in res["response"].lower()
+
+    # 6. Speed check
+    assert command_parser.parse("How fast am I moving?") == Intent.SPEED_CHECK
+    assert command_parser.parse("Check my speed") == Intent.SPEED_CHECK
+    res = aethon_command_service.handle_command("Check my speed", source="web")
+    assert res["intent"] == "SPEED_CHECK"
+    assert "speed" in res["response"].lower() or "movement" in res["response"].lower()
+
+    # 7. Space / fun fact
+    assert command_parser.parse("Tell me a space fact") == Intent.FUN_FACT
+    assert command_parser.parse("Give me a fun fact") == Intent.FUN_FACT
+    res = aethon_command_service.handle_command("Tell me a space fact", source="web")
+    assert res["intent"] == "FUN_FACT"
+    assert len(res["response"]) > 10
+
+    # 8. Creator / ISRO greeting
+    assert command_parser.parse("Who created you?") == Intent.GREETING
+    assert command_parser.parse("Who made you?") == Intent.GREETING
+    res = aethon_command_service.handle_command("Who created you?", source="web")
+    assert res["intent"] == "GREETING"
+    assert "ISRO" in res["response"]
+

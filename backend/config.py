@@ -15,20 +15,24 @@ for p in [DATA_DIR, SESSIONS_DIR, LOGS_DIR, MODELS_DIR, CONFIGS_DIR, DATASET_DIR
     p.mkdir(parents=True, exist_ok=True)
 
 # Camera Configuration
-DEFAULT_CAMERA_INDEX = 0
+# -----------------------------------------------------------------------
+# 640×480 @ 30 FPS is the universal "safe" mode: every USB 2.0 webcam can
+# deliver this in YUY2 without saturating the bus.  1280×720 in uncompressed
+# YUY2 requires ~148 MB/s — more than USB 2.0's 60 MB/s practical throughput —
+# so the driver silently throttles to ~8 FPS.  MJPG fixes that, but not all
+# cameras honour the fourcc hint after the device is already open, so we use
+# a safe default and let camera_service auto-upgrade when MJPG is confirmed.
+DEFAULT_CAMERA_INDEX = 1
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
 CAMERA_FPS = 60
 CAMERA_MIRROR = True
 
-# Ask the camera for MJPG (compressed on-device). At 720p and above an
-# uncompressed YUY2 stream exceeds USB 2.0 bandwidth and the driver silently
-# collapses to a few FPS. Cameras without MJPG support keep their own format.
+# Ask the camera for MJPG (compressed on-device) for high-bandwidth 60 FPS capture.
 CAMERA_PREFER_MJPG = True
-# Startup probe that times real cap.read() calls, because CAP_PROP_FPS often
-# reports the requested rate regardless of what the device can deliver.
 CAMERA_FPS_PROBE_FRAMES = 8
-CAMERA_FPS_PROBE_SECONDS = 1.2
+CAMERA_FPS_PROBE_SECONDS = 1.0
+CAMERA_MIN_ACCEPTABLE_FPS = 15
 
 # Frame pacing for the video path. The capture/stream loop targets this rate
 # independently of AI inference so the video stays smooth even when the

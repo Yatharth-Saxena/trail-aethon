@@ -1,6 +1,7 @@
 import cv2
 import time
 import threading
+import platform
 import numpy as np
 from typing import List, Dict, Any, Optional, Generator, Tuple
 from camera.overlays import draw_perception_overlays
@@ -19,7 +20,15 @@ from backend.config import (
     CAMERA_PREFER_MJPG,
     CAMERA_FPS_PROBE_SECONDS,
     CAMERA_FPS_PROBE_FRAMES,
+    CAMERA_MIN_ACCEPTABLE_FPS,
 )
+
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
 
 
 class CameraService:
@@ -51,6 +60,7 @@ class CameraService:
         self._frame_lock = threading.Lock()
         self._perception_lock = threading.Lock()
         self._jpeg_lock = threading.Condition()
+        self._new_frame_event = threading.Event()
 
         self.raw_frame: Optional[np.ndarray] = None
         self.annotated_frame: Optional[np.ndarray] = None
@@ -87,8 +97,8 @@ class CameraService:
 
     def list_cameras(self, max_test: int = 2) -> List[Dict[str, Any]]:
         return [
-            {"index": 0, "name": "Camera 0 (Integrated/USB)", "active": (self.camera_index == 0)},
-            {"index": 1, "name": "Camera 1 (External USB)", "active": (self.camera_index == 1)}
+            {"index": 0, "name": "Camera 0 (Integrated Webcam)", "active": (self.camera_index == 0)},
+            {"index": 1, "name": "Camera 1 (External 60 FPS USB)", "active": (self.camera_index == 1)}
         ]
 
     def start(self):
@@ -159,31 +169,73 @@ class CameraService:
             f"(requested {CAMERA_WIDTH}x{CAMERA_HEIGHT} @ {CAMERA_FPS} FPS)"
         )
 
-        if measured_fps and measured_fps < CAMERA_FPS * 0.5:
-            print(
-                f"[CameraService WARNING] Camera delivers only {measured_fps:.1f} FPS, "
-                f"far below the configured {CAMERA_FPS}. The video path will pace at "
-                f"the device rate and camera.latency_ms will read high because frames "
-                f"are reused between captures. Likely causes: an uncompressed "
-                f"({fourcc}) pixel format saturating USB bandwidth, a virtual/stub "
-                f"camera on index {self.camera_index}, or a driver limit. Try another "
-                f"index via /api/camera/select, or lower CAMERA_WIDTH/CAMERA_HEIGHT/"
-                f"CAMERA_FPS in backend/config.py."
-            )
-        elif reported_fps > 0 and measured_fps and measured_fps < reported_fps * 0.6:
-            print(
-                f"[CameraService WARNING] Driver claims {reported_fps:.1f} FPS but only "
-                f"{measured_fps:.1f} FPS is delivered — CAP_PROP_FPS is not honoured "
-                f"on this device."
-            )
+    def _try_open_cap(self, index: int):
+        """Open VideoCapture with the best available backend for this platform."""
+        import platform
+        system = platform.system()
+        cap = None
+        if system == "Darwin":
+            cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
+        elif system == "Windows":
+            # Media Foundation (MSMF) provides true hardware 60 FPS on Windows USB webcams
+            cap = cv2.VideoCapture(index, cv2.CAP_MSMF)
+            if cap is None or not cap.isOpened():
+                cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        elif system == "Linux":
+            cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
+        if cap is None or not cap.isOpened():
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            cap = cv2.VideoCapture(index)
+        return cap
 
-        if (actual_w and actual_w != CAMERA_WIDTH) or (actual_h and actual_h != CAMERA_HEIGHT):
-            print(
-                f"[CameraService WARNING] Resolution mismatch: got {actual_w}x{actual_h}, "
-                f"requested {CAMERA_WIDTH}x{CAMERA_HEIGHT}."
-            )
+    def _configure_cap(self, cap, width: int, height: int, fps: int, try_mjpg: bool = True) -> bool:
+        """
+        Apply resolution / FPS / format hints, drain initial buffer frames,
+        and return True when a valid frame is readable.
+        """
+        target_fps = 30 if self.camera_index == 0 else fps
+        if try_mjpg:
+            try:
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            except Exception:
+                pass
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_FPS, target_fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        # Drain initial driver buffer frames so newest frame is always delivered
+        for _ in range(5):
+            cap.read()
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            return True
+
+        # Fallback if MJPG wasn't supported: try native pixel format
+        if try_mjpg:
+            try:
+                cap.set(cv2.CAP_PROP_FOURCC, 0)
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                cap.set(cv2.CAP_PROP_FPS, target_fps)
+                for _ in range(3):
+                    cap.read()
+                ret2, frame2 = cap.read()
+                if ret2 and frame2 is not None:
+                    return True
+            except Exception:
+                pass
+
+        return False
 
     def _init_camera(self):
+        """
+        Open the physical camera with 60 FPS configuration and minimal latency.
+        """
         with self._device_lock:
             old_cap = self.cap
             self.cap = None
@@ -192,62 +244,44 @@ class CameraService:
                     old_cap.release()
                 except Exception:
                     pass
+
             try:
-                import platform
-                system = platform.system()
-                cap = None
-
-                # Try platform-optimized backend first
-                if system == "Darwin":
-                    cap = cv2.VideoCapture(self.camera_index, cv2.CAP_AVFOUNDATION)
-                elif system == "Windows":
-                    cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-                elif system == "Linux":
-                    cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
-
-                # Fallback to default backend if platform-specific backend didn't open
+                cap = self._try_open_cap(self.camera_index)
                 if cap is None or not cap.isOpened():
-                    if cap is not None:
-                        try:
-                            cap.release()
-                        except Exception:
-                            pass
-                    cap = cv2.VideoCapture(self.camera_index)
+                    # If requested index fails, try fallback index
+                    fallback_idx = 0 if self.camera_index != 0 else 1
+                    cap = self._try_open_cap(fallback_idx)
+                    if cap is not None and cap.isOpened():
+                        print(f"[CameraService] Camera index {self.camera_index} unavailable, fell back to index {fallback_idx}.")
+                        self.camera_index = fallback_idx
 
-                if cap is not None and cap.isOpened():
-                    # Request an on-camera-compressed format first: at 720p+
-                    # an uncompressed stream (YUY2) exceeds USB 2.0 bandwidth
-                    # and the driver silently drops to a few FPS. Must be set
-                    # before the resolution for DirectShow to honour it.
-                    # Cameras that don't support it simply keep their format.
-                    if CAMERA_PREFER_MJPG:
-                        try:
-                            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-                        except Exception:
-                            pass
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-                    cap.set(cv2.CAP_PROP_FPS, self.target_fps)
-                    # Minimal driver buffering: always hand us the newest
-                    # frame rather than a queued backlog.
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    ret, _ = cap.read()
-                    if ret:
-                        self.cap = cap
-                        print(f"[CameraService] Hardware camera {self.camera_index} initialized successfully.")
-                        self._log_negotiated_settings(cap)
-                    else:
-                        cap.release()
-                        self.cap = None
-                        print(f"[CameraService] Camera {self.camera_index} opened but could not read frame. Using standby/browser stream.")
-                else:
-                    if cap is not None:
+                if cap is None or not cap.isOpened():
+                    if cap:
                         try:
                             cap.release()
                         except Exception:
                             pass
                     self.cap = None
                     print(f"[CameraService] No physical camera found at index {self.camera_index}. Standby & browser webcam stream active.")
+                    return
+
+                opened = self._configure_cap(
+                    cap,
+                    CAMERA_WIDTH,
+                    CAMERA_HEIGHT,
+                    CAMERA_FPS,
+                    try_mjpg=CAMERA_PREFER_MJPG
+                )
+
+                if opened:
+                    self.cap = cap
+                    print(f"[CameraService] Hardware camera {self.camera_index} initialized successfully.")
+                    self._log_negotiated_settings(cap)
+                else:
+                    cap.release()
+                    self.cap = None
+                    print(f"[CameraService] Camera {self.camera_index} opened but could not read frame. Using standby/browser stream.")
+
             except Exception as e:
                 print(f"[CameraService Warning] Camera {self.camera_index} probe: {e}")
                 self.cap = None
@@ -261,6 +295,7 @@ class CameraService:
             self._latest_hw_frame = frame
             self._hw_timestamp = now
             self._last_client_frame_time = now
+            self._new_frame_event.set()
 
     def toggle_mirror(self) -> bool:
         """Toggles horizontal mirror/inversion on camera feed."""
@@ -274,36 +309,40 @@ class CameraService:
         while self.is_running:
             with self._device_lock:
                 cap = self.cap
-            if cap is not None and cap.isOpened():
-                try:
-                    ret, frame = cap.read()
-                except Exception:
+                if cap is not None and cap.isOpened():
+                    try:
+                        ret, frame = cap.read()
+                    except Exception:
+                        ret, frame = False, None
+                else:
                     ret, frame = False, None
 
-                if ret and frame is not None:
-                    failed_count = 0
-                    if self.mirror:
-                        frame = cv2.flip(frame, 1)
-                    now = time.time()
-                    with self._frame_lock:
-                        # Only use physical camera if browser webcam isn't actively providing frames
-                        if (now - self._last_client_frame_time) > 2.0:
-                            self._latest_hw_frame = frame
-                            self._hw_timestamp = now
-                else:
-                    failed_count += 1
-                    if failed_count > 30:
-                        failed_count = 0
-                        now = time.time()
-                        if now - last_retry > 10.0:
-                            last_retry = now
-                            self._init_camera()
-                    time.sleep(0.01)
+            if ret and frame is not None:
+                failed_count = 0
+                if self.mirror:
+                    frame = cv2.flip(frame, 1)
+                now = time.time()
+                with self._frame_lock:
+                    # Only use physical camera if browser webcam isn't actively providing frames
+                    if (now - self._last_client_frame_time) > 2.0:
+                        self._latest_hw_frame = frame
+                        self._hw_timestamp = now
+                        self._new_frame_event.set()
             else:
-                time.sleep(0.2)
+                failed_count += 1
+                if failed_count > 30:
+                    failed_count = 0
+                    now = time.time()
+                    if now - last_retry > 10.0:
+                        last_retry = now
+                        self._init_camera()
+                time.sleep(0.005)
 
     def switch_camera(self, new_index: int) -> Dict[str, Any]:
         self.camera_index = int(new_index)
+        with self._frame_lock:
+            self._latest_hw_frame = None
+            self._hw_timestamp = 0.0
         self._init_camera()
         return {
             "status": "switched",
@@ -343,19 +382,19 @@ class CameraService:
 
     def _stream_pipeline_loop(self):
         """
-        Paces camera output at `target_fps`, overlaying the most recent
-        perception state and pushing to the recorder, IP streamer and the
-        shared MJPEG buffer.
-
-        AI inference runs on its own thread at its own (lower) rate; this loop
-        simply reuses the last known detections for intermediate frames, so
-        video stays smooth even when inference cannot keep up.
+        Paces camera output at `target_fps` (60 FPS), overlaying the most recent
+        perception state and immediately pushing to the shared MJPEG buffer with
+        minimal latency.
         """
         target_interval = 1.0 / self.target_fps
         frames_in_second = 0
         self.fps_timer = time.time()
 
         while self.is_running:
+            # Wake immediately when a new hardware frame arrives, or timeout at 16.6ms to maintain 60 FPS
+            self._new_frame_event.wait(timeout=target_interval)
+            self._new_frame_event.clear()
+
             t0 = time.time()
 
             # Retrieve latest frame (or standby if no camera or stale)
@@ -406,13 +445,6 @@ class CameraService:
                 self.fps = round(frames_in_second / (now - self.fps_timer), 1)
                 frames_in_second = 0
                 self.fps_timer = now
-
-            elapsed = time.time() - t0
-            sleep_needed = target_interval - elapsed
-            if sleep_needed > 0.001:
-                time.sleep(sleep_needed)
-            else:
-                time.sleep(0.0005)
 
     def get_latest_frame(self, annotated: bool = True) -> Optional[np.ndarray]:
         with self._frame_lock:
@@ -475,6 +507,7 @@ class CameraService:
 
     def stop(self):
         self.is_running = False
+        self._new_frame_event.set()
         with self._jpeg_lock:
             self._jpeg_lock.notify_all()
         with self._device_lock:
@@ -483,6 +516,12 @@ class CameraService:
                     self.cap.release()
                 except Exception:
                     pass
+        if platform.system() == "Windows":
+            try:
+                import ctypes
+                ctypes.windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
 
 
 camera_service = CameraService()

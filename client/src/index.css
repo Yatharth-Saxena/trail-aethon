@@ -1906,6 +1906,25 @@ button:focus-visible, input:focus-visible {
   border-radius: 6px;
 }
 
+@keyframes glow-cyan {
+  0%, 100% {
+    box-shadow: 0 0 4px rgba(56, 189, 248, 0.4);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 14px rgba(56, 189, 248, 0.85);
+    transform: scale(1.08);
+  }
+}
+
+.input-mic.capturing {
+  background: rgba(56, 189, 248, 0.2) !important;
+  color: #38bdf8 !important;
+  border-radius: 6px;
+  animation: glow-cyan 1.2s ease-in-out infinite !important;
+}
+
 .mode-select.active {
   animation: glow-green 2s ease-in-out infinite;
 }
+

@@ -22,7 +22,8 @@ import {
   Sliders,
   Volume2,
   VolumeX,
-  FlipHorizontal
+  FlipHorizontal,
+  CameraOff
 } from "lucide-react";
 import { AudioRecorder } from "../lib/audioRecorder.js";
 
@@ -250,6 +251,7 @@ export default function Home() {
   const [showCameraMenu, setShowCameraMenu] = useState(false);
   const [streamKey, setStreamKey] = useState(Date.now());
   const [useBrowserWebcam, setUseBrowserWebcam] = useState(false);
+  const [isCameraOn, setIsCameraOn] = useState(true);
   const [mirrorFeed, setMirrorFeed] = useState(true);
   const cameraStageRef = useRef(null);
   const videoRef = useRef(null);
@@ -264,7 +266,7 @@ export default function Home() {
     let isUploading = false;
     const captureCanvas = document.createElement("canvas");
 
-    if (useBrowserWebcam) {
+    if (useBrowserWebcam && isCameraOn) {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         navigator.mediaDevices
           .getUserMedia({
@@ -452,7 +454,7 @@ export default function Home() {
         localStream.getTracks().forEach((t) => t.stop());
       }
     };
-  }, [useBrowserWebcam]);
+  }, [useBrowserWebcam, isCameraOn]);
 
   // Experiment state
   const [experimentState, setExperimentState] = useState({
@@ -504,6 +506,7 @@ export default function Home() {
   const [audioRecording, setAudioRecording] = useState(false);
   const audioRecorderRef = useRef(null);
   const recognitionRef = useRef(null);
+  const currentAudioRef = useRef(null);
   const [messages, setMessages] = useState([
     {
       id: 1,
@@ -591,17 +594,40 @@ export default function Home() {
     }
   }, []);
 
-  const WAKE_WORD_REGEX = /^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)?\s*(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|titan|python|than|then|hetan|tane|thanks?|ton|tan|aton)\b[,\s.]*/i;
-  const REPEATED_WAKE_REGEX = /^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,\s.]*/i;
+  const WAKE_WORD_REGEX = /^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)?\s*(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|titan|python|than|then|hetan|tane|thanks?|ton|tan|aton)\b[,\s.:;!?]*/i;
+  const REPEATED_WAKE_REGEX = /^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,\s.:;!?]*/i;
 
-  const normalizeAethonWakeWord = useCallback((text) => {
-    if (!text) return text;
+  const normalizeAethonWakeWord = useCallback((text, strip = false) => {
+    if (!text) return strip ? { hadWake: false, command: "" } : text;
     let cleaned = text.trim();
-    cleaned = cleaned.replace(/^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.\s]*/i, "Hey AETHON, ");
-    cleaned = cleaned.replace(/^\s*(?:hey|hi|hello|he|a|ey|ay|suno)\s+(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|titan|python|than|then|tane|thanks?|ton|tan|aton)\b[,\s.]*/i, "Hey AETHON, ");
-    cleaned = cleaned.replace(/^\s*okay?\s+(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|than|then|tane|thanks?|ton|tan|aton)\b[,\s.]*/i, "OK AETHON, ");
-    cleaned = cleaned.replace(/^\s*(?:hetan)\b[,\s.]*/i, "Hey AETHON, ");
-    cleaned = cleaned.replace(/^\s*(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|than|then|tane|aton)\b[,\s.]*/i, "AETHON, ");
+    let hadWake = false;
+
+    if (REPEATED_WAKE_REGEX.test(cleaned)) {
+      hadWake = true;
+      if (strip) {
+        cleaned = cleaned.replace(REPEATED_WAKE_REGEX, "").replace(/^[,\s.:;!?]+/, "").trim();
+      } else {
+        cleaned = cleaned.replace(REPEATED_WAKE_REGEX, "Hey AETHON, ");
+      }
+    } else {
+      const match = cleaned.match(WAKE_WORD_REGEX);
+      if (match) {
+        hadWake = true;
+        if (strip) {
+          cleaned = cleaned.slice(match[0].length).replace(/^[,\s.:;!?]+/, "").trim();
+        } else {
+          cleaned = cleaned.replace(/^\s*(?:hey|hi|hello|he|a|ey|ay|suno)\s+(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|titan|python|than|then|tane|thanks?|ton|tan|aton)\b[,\s.:;!?]*/i, "Hey AETHON, ");
+          cleaned = cleaned.replace(/^\s*okay?\s+(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|than|then|tane|thanks?|ton|tan|aton)\b[,\s.:;!?]*/i, "OK AETHON, ");
+          cleaned = cleaned.replace(/^\s*(?:hetan)\b[,\s.:;!?]*/i, "Hey AETHON, ");
+          cleaned = cleaned.replace(/^\s*(?:ae?thon|ae?than|ae?thane|athan|athlon|ethan|ethane|eaton|athena|atom|aidan|eden|aeon|item|anton|than|then|tane|aton)\b[,\s.:;!?]*/i, "AETHON, ");
+        }
+      }
+    }
+
+    if (strip) {
+      return { hadWake, command: cleaned };
+    }
+
     cleaned = cleaned.replace(/^Hey AETHON,\s*$/i, "Hey AETHON");
     cleaned = cleaned.replace(/^OK AETHON,\s*$/i, "OK AETHON");
     cleaned = cleaned.replace(/^AETHON,\s*$/i, "AETHON");
@@ -609,22 +635,8 @@ export default function Home() {
   }, []);
 
   const stripWakeWord = useCallback((text) => {
-    if (!text) return { hadWake: false, command: "" };
-    let cleaned = text.trim();
-    let hadWake = false;
-
-    if (REPEATED_WAKE_REGEX.test(cleaned)) {
-      cleaned = cleaned.replace(REPEATED_WAKE_REGEX, "").trim();
-      hadWake = true;
-    } else {
-      const match = cleaned.match(WAKE_WORD_REGEX);
-      if (match) {
-        cleaned = cleaned.slice(match[0].length).replace(/^[,\s.]+/, "").trim();
-        hadWake = true;
-      }
-    }
-    return { hadWake, command: cleaned };
-  }, []);
+    return normalizeAethonWakeWord(text, true);
+  }, [normalizeAethonWakeWord]);
 
   // --- Natural Speech Synthesis (Browser Neural Voice) ---
   const voicesRef = useRef([]);
@@ -650,83 +662,59 @@ export default function Home() {
     }
   }, []);
 
-  // Select high-quality natural female voice (Samantha on macOS, Google US English, Microsoft Aria/Jenny Online Natural)
+  // Select normal natural Indian English voice (en-IN: Neerja, Heera, Veena, Google English (India), etc.)
   const getPreferredVoice = useCallback(() => {
     let list = (voicesRef.current && voicesRef.current.length > 0)
       ? voicesRef.current
       : (typeof window !== "undefined" && "speechSynthesis" in window ? window.speechSynthesis.getVoices() : []);
     if (!list || list.length === 0) return null;
 
-    // 1. macOS / iOS standard & enhanced natural female voices (Samantha, Karen, Victoria, Ava, Allison, Susan)
-    const macFemale = list.find(v => {
-      const name = v.name.toLowerCase();
-      return (
-        name.includes("samantha") ||
-        name.includes("karen") ||
-        name.includes("victoria") ||
-        name.includes("tessa") ||
-        name.includes("moira") ||
-        name.includes("fiona") ||
-        name.includes("allison") ||
-        name.includes("susan")
-      );
+    // 1. Natural Indian English voices (en-IN: Neerja, Heera, Veena, Google English India, etc.)
+    const indianEnglishFemale = list.find(v => {
+      const l = (v.lang || "").toLowerCase().replace("_", "-");
+      const n = (v.name || "").toLowerCase();
+      const isIndian = l === "en-in" || l.startsWith("en-in") || n.includes("india");
+      const isFemale = n.includes("neerja") || n.includes("heera") || n.includes("veena") ||
+                       n.includes("kavya") || n.includes("swara") ||
+                       (!n.includes("male") && !n.includes("prabhat") && !n.includes("ravi"));
+      return isIndian && isFemale;
     });
-    if (macFemale) return macFemale;
+    if (indianEnglishFemale) return indianEnglishFemale;
 
-    // 2. Google Chrome Natural Female voices
-    const googleFemale = list.find(v =>
-      v.name === "Google US English" ||
-      v.name === "Google UK English Female" ||
-      (v.name.includes("Google") && (v.name.includes("Female") || !v.name.toLowerCase().includes("male")))
-    );
-    if (googleFemale) return googleFemale;
-
-    // 3. Microsoft Natural / Neural online female voices (Edge: Aria, Jenny, Swara, Neerja, Ava, Emma)
-    const msNaturalFemale = list.find(v => {
-      const name = v.name.toLowerCase();
-      const isNeural = name.includes("natural") || name.includes("neural") || name.includes("online");
-      const isFemaleName = name.includes("aria") || name.includes("jenny") || name.includes("ava") ||
-                           name.includes("emma") || name.includes("swara") || name.includes("neerja") ||
-                           name.includes("zira");
-      return (isNeural && isFemaleName) || (isNeural && !name.includes("guy") && !name.includes("david") && !name.includes("mark"));
+    // 2. Any Indian English voice (en-IN)
+    const anyIndianEnglish = list.find(v => {
+      const l = (v.lang || "").toLowerCase().replace("_", "-");
+      const n = (v.name || "").toLowerCase();
+      return l === "en-in" || l.startsWith("en-in") || n.includes("india") || n.includes("neerja") || n.includes("heera");
     });
-    if (msNaturalFemale) return msNaturalFemale;
+    if (anyIndianEnglish) return anyIndianEnglish;
 
-    // 4. Any English voice with female naming
-    const anyFemaleEnglish = list.find(v => {
-      const name = v.name.toLowerCase();
-      return (
-        (v.lang && v.lang.startsWith("en")) &&
-        (name.includes("female") || name.includes("zira") || name.includes("samantha") || name.includes("swara") || name.includes("karen")) &&
-        !name.includes("male") && !name.includes("david") && !name.includes("mark") && !name.includes("george")
-      );
+    // 3. Indian Hindi voice (hi-IN: Swara, Kalpana, Google हिन्दी)
+    const indianHindi = list.find(v => {
+      const l = (v.lang || "").toLowerCase().replace("_", "-");
+      const n = (v.name || "").toLowerCase();
+      return l === "hi-in" || l.startsWith("hi-in") || n.includes("hindi") || n.includes("swara");
     });
-    if (anyFemaleEnglish) return anyFemaleEnglish;
+    if (indianHindi) return indianHindi;
 
-    // 5. General non-male voice fallback
-    const nonMale = list.find(v => {
-      const name = v.name.toLowerCase();
-      return (
-        (v.lang && v.lang.startsWith("en")) &&
-        !name.includes("david") &&
-        !name.includes("mark") &&
-        !name.includes("george") &&
-        !name.includes("richard") &&
-        !name.includes("alex") &&
-        !name.includes("fred") &&
-        !name.includes("guy") &&
-        !name.includes("male")
-      );
+    // 4. Fallback: Any clear English voice
+    const fallbackEnglish = list.find(v => {
+      const l = (v.lang || "").toLowerCase();
+      return l.startsWith("en") && !v.name.toLowerCase().includes("male");
     });
-    return nonMale || list[0];
+    return fallbackEnglish || list[0];
   }, []);
 
   const lastSpokenIdRef = useRef(1); // 1 is initial welcome message
+  const spokenIdsSetRef = useRef(new Set([1]));
   const lastSpokenTextRef = useRef("");
   const lastSpokenTimeRef = useRef(0);
+  const activeSpeechGenerationRef = useRef(0);
   // True strictly while AETHON's own TTS is audible. Used to mute wake-word
   // recognition so the assistant cannot trigger itself.
   const isSpeakingRef = useRef(false);
+  const speakingWatchdogRef = useRef(null);
+  const recognitionActiveRef = useRef(false);
 
   const speakAssistantResponse = useCallback((text, msgId = null) => {
     if (!text || !voiceModeRef.current) return;
@@ -739,13 +727,20 @@ export default function Home() {
 
     const now = Date.now();
 
-    // Deduplication check 1: Exact message ID match
+    // Deduplication check: Avoid re-voicing the exact same message ID
     if (msgId !== null && msgId !== undefined) {
-      if (lastSpokenIdRef.current >= msgId) return;
+      if (spokenIdsSetRef.current.has(msgId)) {
+        return;
+      }
+      spokenIdsSetRef.current.add(msgId);
       lastSpokenIdRef.current = msgId;
+      if (spokenIdsSetRef.current.size > 100) {
+        const arr = Array.from(spokenIdsSetRef.current);
+        spokenIdsSetRef.current = new Set(arr.slice(-50));
+      }
     }
 
-    // Deduplication check 2: Temporal identical utterance suppression (prevents double-playback within 4s)
+    // Temporal identical utterance suppression (prevents repeating within 4s)
     if (
       clean.toLowerCase() === lastSpokenTextRef.current.toLowerCase() &&
       (now - lastSpokenTimeRef.current) < 4000
@@ -757,56 +752,113 @@ export default function Home() {
     lastSpokenTimeRef.current = now;
     lastWakeTimeRef.current = now;
 
-    try {
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        if (window.speechSynthesis.paused) {
-          try { window.speechSynthesis.resume(); } catch (e) {}
-        }
-        // Cancel any previous utterance to avoid talking over itself
-        window.speechSynthesis.cancel();
+    // Advance speech generation token: completely invalidates any pending promises/handlers
+    const currentGen = ++activeSpeechGenerationRef.current;
 
-        const utter = new SpeechSynthesisUtterance(clean);
-        utter.rate = 1.0;
-        utter.pitch = 1.02;
-        const voice = getPreferredVoice();
-        if (voice) utter.voice = voice;
+    // Stop and cleanly release any previous audio element
+    if (currentAudioRef.current) {
+      try {
+        currentAudioRef.current.pause();
+        currentAudioRef.current.currentTime = 0;
+        currentAudioRef.current.onplay = null;
+        currentAudioRef.current.onended = null;
+        currentAudioRef.current.onerror = null;
+      } catch (e) {}
+      currentAudioRef.current = null;
+    }
+    // Hard-cancel any residual browser speech synthesis so no second voice can ever speak
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      try { window.speechSynthesis.cancel(); } catch (e) {}
+    }
 
-        // Wave animation starts when AETHON speaks
-        setIsAssistantActive(true);
-        isSpeakingRef.current = true;
-        if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
-        const estDuration = Math.max(3000, clean.length * 90);
-        activeTimerRef.current = setTimeout(() => {
-          setIsAssistantActive(false);
-          isSpeakingRef.current = false;
-          setVoiceStatus("idle");
-        }, estDuration);
+    if (speakingWatchdogRef.current) {
+      clearTimeout(speakingWatchdogRef.current);
+      speakingWatchdogRef.current = null;
+    }
 
-        utter.onstart = () => {
-          setIsAssistantActive(true);
-          isSpeakingRef.current = true;
-        };
-        utter.onend = () => {
-          setIsAssistantActive(false);
-          isSpeakingRef.current = false;
-          setVoiceStatus("idle");
-          if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
-        };
-        utter.onerror = () => {
-          setIsAssistantActive(false);
-          isSpeakingRef.current = false;
-          setVoiceStatus("idle");
-          if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
-        };
-
-        window.speechSynthesis.speak(utter);
-      }
-    } catch (e) {
-      console.warn("[TTS SpeechSynthesis Error]", e);
+    // Safety watchdog: guarantees isSpeakingRef can never be stuck true if an audio event is missed
+    const maxSpeechMs = Math.max(3500, Math.min(clean.length * 80 + 3500, 22000));
+    speakingWatchdogRef.current = setTimeout(() => {
+      if (activeSpeechGenerationRef.current !== currentGen) return;
       setIsAssistantActive(false);
       isSpeakingRef.current = false;
+      setVoiceStatus(continuousListeningRef.current ? "listening" : "idle");
+    }, maxSpeechMs);
+
+    // Sole voice: High-Fidelity Indian English Neural Speech Synthesis (/api/voice/tts)
+    try {
+      const ttsUrl = `${API_BASE}/api/voice/tts?text=${encodeURIComponent(clean)}`;
+      const audio = new Audio(ttsUrl);
+      currentAudioRef.current = audio;
+
+      audio.onplay = () => {
+        if (activeSpeechGenerationRef.current !== currentGen) {
+          try { audio.pause(); } catch (e) {}
+          return;
+        }
+        setIsAssistantActive(true);
+        isSpeakingRef.current = true;
+        setVoiceStatus("speaking");
+      };
+
+      audio.onended = () => {
+        if (activeSpeechGenerationRef.current !== currentGen) return;
+        if (speakingWatchdogRef.current) {
+          clearTimeout(speakingWatchdogRef.current);
+          speakingWatchdogRef.current = null;
+        }
+        setIsAssistantActive(false);
+        isSpeakingRef.current = false;
+        setVoiceStatus(continuousListeningRef.current ? "listening" : "idle");
+        if (currentAudioRef.current === audio) {
+          currentAudioRef.current = null;
+        }
+      };
+
+      audio.onerror = (e) => {
+        if (activeSpeechGenerationRef.current !== currentGen) return;
+        if (speakingWatchdogRef.current) {
+          clearTimeout(speakingWatchdogRef.current);
+          speakingWatchdogRef.current = null;
+        }
+        setIsAssistantActive(false);
+        isSpeakingRef.current = false;
+        setVoiceStatus(continuousListeningRef.current ? "listening" : "idle");
+        if (currentAudioRef.current === audio) {
+          currentAudioRef.current = null;
+        }
+      };
+
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          if (activeSpeechGenerationRef.current !== currentGen || err?.name === "AbortError") {
+            return;
+          }
+          if (speakingWatchdogRef.current) {
+            clearTimeout(speakingWatchdogRef.current);
+            speakingWatchdogRef.current = null;
+          }
+          setIsAssistantActive(false);
+          isSpeakingRef.current = false;
+          setVoiceStatus(continuousListeningRef.current ? "listening" : "idle");
+          if (currentAudioRef.current === audio) {
+            currentAudioRef.current = null;
+          }
+        });
+      }
+    } catch (e) {
+      if (activeSpeechGenerationRef.current === currentGen) {
+        if (speakingWatchdogRef.current) {
+          clearTimeout(speakingWatchdogRef.current);
+          speakingWatchdogRef.current = null;
+        }
+        setIsAssistantActive(false);
+        isSpeakingRef.current = false;
+        setVoiceStatus(continuousListeningRef.current ? "listening" : "idle");
+      }
     }
-  }, [getPreferredVoice]);
+  }, []);
 
   const speakAssistantRef = useRef(speakAssistantResponse);
   useEffect(() => {
@@ -895,19 +947,6 @@ export default function Home() {
                   return data.conversation;
                 });
 
-                const lastMsg = data.conversation[data.conversation.length - 1];
-                if (lastMsg && lastMsg.role === "assistant" && lastMsg.id > lastSpokenIdRef.current) {
-                  lastWakeTimeRef.current = Date.now();
-                  setIsAssistantActive(true);
-                  if (activeTimerRef.current) clearTimeout(activeTimerRef.current);
-                  activeTimerRef.current = setTimeout(() => {
-                    setIsAssistantActive(false);
-                  }, 3500);
-
-                  if (speakAssistantRef.current) {
-                    speakAssistantRef.current(lastMsg.text, lastMsg.id);
-                  }
-                }
               }
 
               if (data.logs) {
@@ -1141,11 +1180,8 @@ export default function Home() {
     setLiveTranscript("");
     setIsSpeechActive(false);
 
-    // Stop transcribing between commands rather than leaving an open
-    // recognition session; onend re-arms it if always-on is still enabled.
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch (e) {}
-    }
+    // Keep continuous recognition running seamlessly rather than tearing it down and
+    // re-requesting the audio stream every command, which crashes Chrome's speech engine after 3-4 cycles.
   }, [clearCommandTimers]);
 
   const finalizeCommandRef = useRef(finalizeCommand);
@@ -1206,6 +1242,8 @@ export default function Home() {
     enterIdleListeningRef.current = enterIdleListening;
   }, [enterIdleListening]);
 
+  const startContinuousListeningRef = useRef(null);
+
   // Continuous Listening – always-on voice recognition
   const startContinuousListening = useCallback(() => {
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1214,9 +1252,12 @@ export default function Home() {
       return;
     }
 
-    // Stop any existing instance
+    // Stop any existing instance and mark it superseded so its onend doesn't trigger a duplicate restart
     if (recognitionRef.current) {
-      try { recognitionRef.current.abort(); } catch (e) {}
+      try {
+        recognitionRef.current._superseded = true;
+        recognitionRef.current.abort();
+      } catch (e) {}
     }
 
     const recognition = new SpeechRec();
@@ -1224,15 +1265,18 @@ export default function Home() {
     recognition.interimResults = true;
     recognition.continuous = true;
     recognition.maxAlternatives = 1;
+    recognition._superseded = false;
     recognitionRef.current = recognition;
 
     recognition.onstart = () => {
+      recognitionActiveRef.current = true;
       setIsListening(true);
       setVoiceStatus(wakeStateRef.current === WAKE_STATE.CAPTURING_COMMAND ? "wake_detected" : "listening");
     };
 
     // Speech boundary events drive the "actually hearing you" indicator.
     recognition.onspeechstart = () => {
+      if (isSpeakingRef.current) return;
       if (markSpeechActiveRef.current) markSpeechActiveRef.current();
     };
     recognition.onspeechend = () => {
@@ -1250,10 +1294,8 @@ export default function Home() {
     //                    short silence finalises and sends it exactly once.
     recognition.onresult = (event) => {
       // Ignore the assistant's own speech echoing back through the mic.
-      const assistantSpeaking =
-        isSpeakingRef.current ||
-        (typeof window !== "undefined" && "speechSynthesis" in window && window.speechSynthesis.speaking);
-      if (assistantSpeaking) {
+      // Uses isSpeakingRef (guarded by speakingWatchdogRef) instead of buggy window.speechSynthesis.speaking
+      if (isSpeakingRef.current) {
         setLiveTranscript("");
         return;
       }
@@ -1323,29 +1365,34 @@ export default function Home() {
     };
 
     recognition.onerror = (e) => {
-      if (e.error === "aborted") return; // Handled restart or cleanup
+      recognitionActiveRef.current = false;
+      if (e.error === "aborted" || e.error === "no-speech") return;
       console.warn("[Continuous Voice Error]", e.error);
-      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
-        setContinuousListening(false);
-        setIsListening(false);
-        setVoiceStatus("idle");
-        return;
-      }
+
+      // Auto re-arm on transient errors rather than permanently killing the mic
       if (continuousListeningRef.current) {
-        setVoiceStatus("listening");
+        if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+        const retryDelay = e.error === "service-not-allowed" ? 1200 : 500;
+        restartTimerRef.current = setTimeout(() => {
+          if (continuousListeningRef.current && startContinuousListeningRef.current) {
+            startContinuousListeningRef.current();
+          }
+        }, retryDelay);
       }
     };
 
     recognition.onend = () => {
+      recognitionActiveRef.current = false;
+      // If superseded by a newer recognition instance, don't trigger a duplicate restart
+      if (recognition._superseded) return;
       setIsSpeechActive(false);
       if (continuousListeningRef.current) {
-        // Re-arm for the next "Hey AETHON". This is also the path taken right
-        // after a command is sent, since finalizeCommand stops recognition.
+        // Re-arm for the next "Hey AETHON". Create a fresh instance each time to avoid InvalidStateError.
         if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
         restartTimerRef.current = setTimeout(() => {
           try {
-            if (continuousListeningRef.current && recognitionRef.current === recognition) {
-              recognition.start();
+            if (continuousListeningRef.current && startContinuousListeningRef.current) {
+              startContinuousListeningRef.current();
             }
           } catch (e) {}
         }, 350);
@@ -1358,10 +1405,24 @@ export default function Home() {
 
     try {
       recognition.start();
+      recognitionActiveRef.current = true;
     } catch (e) {
-      setVoiceStatus("idle");
+      console.warn("[Continuous Voice] recognition.start() error, retrying:", e);
+      recognitionActiveRef.current = false;
+      if (continuousListeningRef.current) {
+        if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = setTimeout(() => {
+          if (continuousListeningRef.current && startContinuousListeningRef.current) {
+            startContinuousListeningRef.current();
+          }
+        }, 500);
+      }
     }
   }, []);
+
+  useEffect(() => {
+    startContinuousListeningRef.current = startContinuousListening;
+  }, [startContinuousListening]);
 
   const stopContinuousListening = useCallback(() => {
     if (restartTimerRef.current) {
@@ -1373,7 +1434,10 @@ export default function Home() {
       speechActiveTimerRef.current = null;
     }
     if (recognitionRef.current) {
-      try { recognitionRef.current.abort(); } catch (e) {}
+      try {
+        recognitionRef.current._superseded = true;
+        recognitionRef.current.abort();
+      } catch (e) {}
       recognitionRef.current = null;
     }
     setIsListening(false);
@@ -1394,6 +1458,24 @@ export default function Home() {
       stopContinuousListening();
     };
   }, [continuousListening, startContinuousListening, stopContinuousListening]);
+
+  // Liveness watchdog supervisor: guarantees continuous listening stays alive even if Chrome drops the session
+  useEffect(() => {
+    if (!continuousListening) return;
+    const supervisor = setInterval(() => {
+      if (
+        continuousListeningRef.current &&
+        !recognitionActiveRef.current &&
+        !isSpeakingRef.current
+      ) {
+        console.log("[Continuous Voice Watchdog] Recognition dropped; reviving session...");
+        if (startContinuousListeningRef.current) {
+          startContinuousListeningRef.current();
+        }
+      }
+    }, 1800);
+    return () => clearInterval(supervisor);
+  }, [continuousListening]);
 
   // Push-to-Talk Speech Recognition (with WAV recording fallback)
   const handleMicClick = async () => {
@@ -1451,7 +1533,24 @@ export default function Home() {
   // These confirm via the local toast, not sendCommand(): a camera button is
   // a hardware action, not a voice/chat interaction, so it must not push chat
   // bubbles, scroll the conversation panel, or speak through TTS.
+  const handleToggleCamera = useCallback(() => {
+    setIsCameraOn((prev) => {
+      const next = !prev;
+      if (next) {
+        setStreamKey(Date.now());
+        showToast("Camera feed enabled", "info");
+      } else {
+        showToast("Camera feed turned off", "warn");
+      }
+      return next;
+    });
+  }, [showToast]);
+
   const handleSnapshot = async () => {
+    if (!isCameraOn) {
+      showToast("Camera feed is turned off", "warn");
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/camera/snapshot`, { method: "POST" });
       const data = await res.json();
@@ -1462,6 +1561,10 @@ export default function Home() {
   };
 
   const handleRecordToggle = async () => {
+    if (!isCameraOn && !isRecording) {
+      showToast("Cannot record while camera feed is turned off", "warn");
+      return;
+    }
     const wasRecording = isRecording;
     try {
       const endpoint = wasRecording ? "/api/camera/record/stop" : "/api/camera/record/start";
@@ -1492,13 +1595,26 @@ export default function Home() {
   const handleSelectCamera = async (index) => {
     setSelectedCamera(index);
     setShowCameraMenu(false);
+    setUseBrowserWebcam(false);
+    setIsCameraOn(true);
     try {
-      await fetch(`${API_BASE}/api/camera/select`, {
+      const res = await fetch(`${API_BASE}/api/camera/select`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ index })
       });
-    } catch (e) {}
+      const data = await res.json();
+      if (data && data.cameras) {
+        setCameras(data.cameras);
+      }
+      if (data && data.camera_index !== undefined) {
+        setSelectedCamera(data.camera_index);
+      }
+    } catch (e) {
+      console.error("[Camera Switch Error]", e);
+    } finally {
+      setStreamKey(Date.now());
+    }
   };
 
   const handleFullscreen = () => {
@@ -1516,6 +1632,7 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/api/experiment/start`, { method: "POST" });
       const data = await res.json();
       if (data.state) setExperimentState(data.state);
+      if (data.message) speakAssistantResponse(data.message);
     } catch (e) {}
   };
 
@@ -1524,6 +1641,7 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/api/experiment/pause`, { method: "POST" });
       const data = await res.json();
       if (data.state) setExperimentState(data.state);
+      if (data.message) speakAssistantResponse(data.message);
     } catch (e) {}
   };
 
@@ -1532,6 +1650,7 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/api/experiment/resume`, { method: "POST" });
       const data = await res.json();
       if (data.state) setExperimentState(data.state);
+      if (data.message) speakAssistantResponse(data.message);
     } catch (e) {}
   };
 
@@ -1540,6 +1659,7 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/api/experiment/reset`, { method: "POST" });
       const data = await res.json();
       if (data.state) setExperimentState(data.state);
+      if (data.message) speakAssistantResponse(data.message);
     } catch (e) {}
   };
 
@@ -1548,6 +1668,7 @@ export default function Home() {
       const res = await fetch(`${API_BASE}/api/experiment/stop`, { method: "POST" });
       const data = await res.json();
       if (data.state) setExperimentState(data.state);
+      if (data.message) speakAssistantResponse(data.message);
     } catch (e) {}
   };
 
@@ -1663,12 +1784,44 @@ export default function Home() {
                   <GlassPanel className="camera-panel">
                     <PanelTitle
                       title="Live Camera Feed"
-                      subtitle="Real-time AI perception"
+                      subtitle={isCameraOn ? "Real-time AI perception" : "Feed Standby / Offline"}
                       action={
                         <div className="camera-status">
+                          <button
+                            type="button"
+                            onClick={handleToggleCamera}
+                            aria-label={isCameraOn ? "Turn camera off" : "Turn camera on"}
+                            title={isCameraOn ? "Click to turn camera feed OFF" : "Click to turn camera feed ON"}
+                            style={{
+                              background: isCameraOn ? "rgba(34, 211, 238, 0.15)" : "rgba(239, 68, 68, 0.18)",
+                              border: `1px solid ${isCameraOn ? "rgba(34, 211, 238, 0.4)" : "rgba(239, 68, 68, 0.45)"}`,
+                              borderRadius: 6,
+                              padding: "2px 8px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 5,
+                              color: isCameraOn ? "#67e8f9" : "#fca5a5",
+                              cursor: "pointer",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              letterSpacing: "0.04em",
+                              transition: "all 0.18s ease"
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 7,
+                                height: 7,
+                                borderRadius: "50%",
+                                background: isCameraOn ? "#22d3ee" : "#ef4444",
+                                boxShadow: isCameraOn ? "0 0 6px #22d3ee" : "0 0 6px #ef4444"
+                              }}
+                            />
+                            {isCameraOn ? "CAM ON" : "CAM OFF"}
+                          </button>
                           <StatusDot label="REC" tone={isRecording ? "white" : "white"} />
-                          <span>{fps} FPS</span>
-                          {latencyMs !== null && (
+                          <span>{isCameraOn ? `${fps} FPS` : "0 FPS"}</span>
+                          {isCameraOn && latencyMs !== null && (
                             <span title="Camera capture to telemetry latency">
                               {Math.round(latencyMs)} ms
                             </span>
@@ -1688,9 +1841,66 @@ export default function Home() {
                       className="camera-stage"
                       ref={cameraStageRef}
                       aria-label="Live camera feed"
-                      data-feed-status="live"
+                      data-feed-status={isCameraOn ? "live" : "disabled"}
                     >
-                      {useBrowserWebcam ? (
+                      {!isCameraOn ? (
+                        <div
+                          style={{
+                            width: "100%",
+                            height: "100%",
+                            display: "flex",
+                            flexDirection: "column",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            background: "radial-gradient(circle at 50% 50%, rgba(18, 24, 30, 0.98), rgba(7, 9, 11, 0.99))",
+                            position: "relative",
+                            userSelect: "none",
+                            padding: 24
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: 60,
+                              height: 60,
+                              borderRadius: "50%",
+                              background: "rgba(239, 68, 68, 0.12)",
+                              border: "1px solid rgba(239, 68, 68, 0.3)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              marginBottom: 12,
+                              boxShadow: "0 0 24px rgba(239, 68, 68, 0.12)"
+                            }}
+                          >
+                            <CameraOff size={26} style={{ color: "#f87171" }} />
+                          </div>
+                          <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#f1f5f7" }}>
+                            Camera Feed Standby
+                          </div>
+                          <div style={{ fontSize: 12, color: "rgba(241, 245, 246, 0.45)", marginTop: 4, textAlign: "center" }}>
+                            Video stream paused. Click below or in the toolbar to turn camera on.
+                          </div>
+                          <button
+                            type="button"
+                            className="select-button"
+                            onClick={handleToggleCamera}
+                            style={{
+                              marginTop: 16,
+                              background: "rgba(34, 211, 238, 0.18)",
+                              borderColor: "rgba(34, 211, 238, 0.5)",
+                              color: "#67e8f9",
+                              fontWeight: 600,
+                              gap: 8,
+                              padding: "0 16px",
+                              minHeight: 34,
+                              justifyContent: "center"
+                            }}
+                          >
+                            <Camera size={14} />
+                            <span>Turn Camera On</span>
+                          </button>
+                        </div>
+                      ) : useBrowserWebcam ? (
                         <>
                           <video
                             ref={videoRef}
@@ -1742,7 +1952,10 @@ export default function Home() {
                           type="button"
                           className="select-button"
                           style={{ minWidth: 36, width: 36, padding: 0, justifyContent: "center" }}
-                          onClick={() => setStreamKey(Date.now())}
+                          onClick={() => {
+                            setIsCameraOn(true);
+                            setStreamKey(Date.now());
+                          }}
                           title="Reconnect stream"
                         >
                           <RefreshCw size={13} />
@@ -1759,53 +1972,65 @@ export default function Home() {
                               borderRadius: 8,
                               padding: 4,
                               zIndex: 50,
-                              minWidth: 230,
+                              minWidth: 260,
                               backdropFilter: "blur(12px)"
                             }}
                           >
+                            {cameras.map((cam) => (
+                              <button
+                                key={cam.index}
+                                type="button"
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  width: "100%",
+                                  textAlign: "left",
+                                  padding: "8px 10px",
+                                  fontSize: 13,
+                                  background: !useBrowserWebcam && selectedCamera === cam.index ? "rgba(34, 211, 238, 0.15)" : "transparent",
+                                  border: 0,
+                                  borderRadius: 4,
+                                  color: !useBrowserWebcam && selectedCamera === cam.index ? "#67e8f9" : "#f1f5f7",
+                                  cursor: "pointer",
+                                  fontWeight: !useBrowserWebcam && selectedCamera === cam.index ? 600 : 400
+                                }}
+                                onClick={() => handleSelectCamera(cam.index)}
+                              >
+                                <span>{cam.name || `Camera ${cam.index}`}</span>
+                                {!useBrowserWebcam && selectedCamera === cam.index && (
+                                  <span style={{ color: "#22d3ee", fontSize: 11, fontWeight: 700 }}>● ACTIVE</span>
+                                )}
+                              </button>
+                            ))}
                             <button
                               type="button"
                               style={{
-                                display: "block",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
                                 width: "100%",
                                 textAlign: "left",
-                                padding: "7px 10px",
+                                padding: "8px 10px",
                                 fontSize: 13,
-                                background: !useBrowserWebcam ? "rgba(255, 255, 255, 0.15)" : "transparent",
+                                background: useBrowserWebcam ? "rgba(34, 211, 238, 0.15)" : "transparent",
                                 border: 0,
                                 borderRadius: 4,
-                                color: "#f1f5f7",
-                                cursor: "pointer"
-                              }}
-                              onClick={() => {
-                                setUseBrowserWebcam(false);
-                                handleSelectCamera(0);
-                                setStreamKey(Date.now());
-                                setShowCameraMenu(false);
-                              }}
-                            >
-                              Camera 0: Integrated/USB (AI Pipeline)
-                            </button>
-                            <button
-                              type="button"
-                              style={{
-                                display: "block",
-                                width: "100%",
-                                textAlign: "left",
-                                padding: "7px 10px",
-                                fontSize: 13,
-                                background: useBrowserWebcam ? "rgba(255, 255, 255, 0.15)" : "transparent",
-                                border: 0,
-                                borderRadius: 4,
-                                color: "#f1f5f7",
-                                cursor: "pointer"
+                                color: useBrowserWebcam ? "#67e8f9" : "#f1f5f7",
+                                cursor: "pointer",
+                                fontWeight: useBrowserWebcam ? 600 : 400,
+                                borderTop: "1px solid rgba(255, 255, 255, 0.1)"
                               }}
                               onClick={() => {
                                 setUseBrowserWebcam(true);
+                                setIsCameraOn(true);
                                 setShowCameraMenu(false);
                               }}
                             >
-                              Browser Native Webcam (Live AI Perception)
+                              <span>Browser Native Webcam</span>
+                              {useBrowserWebcam && (
+                                <span style={{ color: "#22d3ee", fontSize: 11, fontWeight: 700 }}>● ACTIVE</span>
+                              )}
                             </button>
                           </div>
                         )}
@@ -1814,24 +2039,62 @@ export default function Home() {
                       <div className="camera-actions">
                         <button
                           type="button"
+                          className={isCameraOn ? "active-action" : ""}
+                          onClick={handleToggleCamera}
+                          title={isCameraOn ? "Click to turn camera feed OFF" : "Click to turn camera feed ON"}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            padding: "4px 10px",
+                            borderRadius: 7,
+                            border: `1px solid ${isCameraOn ? "rgba(34, 211, 238, 0.45)" : "rgba(239, 68, 68, 0.5)"}`,
+                            background: isCameraOn ? "rgba(34, 211, 238, 0.14)" : "rgba(239, 68, 68, 0.18)",
+                            color: isCameraOn ? "#67e8f9" : "#fca5a5",
+                            fontWeight: 600,
+                            cursor: "pointer",
+                            transition: "all 0.18s ease"
+                          }}
+                        >
+                          {isCameraOn ? <Camera size={15} /> : <CameraOff size={15} />}
+                          <span>{isCameraOn ? "Camera On" : "Camera Off"}</span>
+                        </button>
+                        <button
+                          type="button"
                           className={mirrorFeed ? "active-action" : ""}
                           onClick={handleToggleMirror}
+                          disabled={!isCameraOn}
                           title={mirrorFeed ? "Camera feed is mirrored / inverted (Click to toggle)" : "Click to mirror / invert camera feed"}
                           style={{
                             background: mirrorFeed ? "rgba(34, 197, 94, 0.2)" : undefined,
                             borderColor: mirrorFeed ? "rgba(34, 197, 94, 0.5)" : undefined,
-                            color: mirrorFeed ? "#86efac" : undefined
+                            color: mirrorFeed ? "#86efac" : undefined,
+                            opacity: isCameraOn ? 1 : 0.4,
+                            cursor: isCameraOn ? "pointer" : "not-allowed"
                           }}
                         >
                           <FlipHorizontal size={15} /> {mirrorFeed ? "Mirrored" : "Mirror"}
                         </button>
-                        <button type="button" onClick={handleSnapshot}>
+                        <button
+                          type="button"
+                          onClick={handleSnapshot}
+                          disabled={!isCameraOn}
+                          style={{
+                            opacity: isCameraOn ? 1 : 0.4,
+                            cursor: isCameraOn ? "pointer" : "not-allowed"
+                          }}
+                        >
                           <Camera size={16} /> Snapshot
                         </button>
                         <button
                           type="button"
                           className={isRecording ? "active-action" : ""}
                           onClick={handleRecordToggle}
+                          disabled={!isCameraOn && !isRecording}
+                          style={{
+                            opacity: isCameraOn || isRecording ? 1 : 0.4,
+                            cursor: isCameraOn || isRecording ? "pointer" : "not-allowed"
+                          }}
                         >
                           <span className="record-ring" /> Record
                         </button>
@@ -2247,12 +2510,18 @@ export default function Home() {
 
               <div className="assistant-suggestions">
                 {[
+                  "What is the mission?",
+                  "Show all steps",
+                  "What's the next step?",
+                  "What is my progress?",
                   "What am I doing?",
                   "What is this object?",
+                  "Safety check",
+                  "Which hand am I using?",
+                  "Check my speed",
                   "What color is this?",
-                  "What are my movements?",
-                  "What's the next step?",
-                  "Am I doing it right?"
+                  "Am I doing it right?",
+                  "Space fact"
                 ].map((prompt) => (
                   <button
                     type="button"
@@ -2291,8 +2560,9 @@ export default function Home() {
                   type="button"
                   /* `active` = mic is armed/highlighted. The pulse animation
                      is bound separately to actual detected speech, so "armed,
-                     waiting" and "hearing you now" look different. */
-                  className={`input-mic ${isListening || continuousListening || audioRecording ? "active" : ""}`}
+                     waiting" and "hearing you now" look different.
+                     `capturing` = wake word matched, actively capturing command. */
+                  className={`input-mic ${isListening || continuousListening || audioRecording ? "active" : ""} ${wakeState === WAKE_STATE.CAPTURING_COMMAND ? "capturing" : ""}`}
                   style={{
                     color: audioRecording
                       ? "#ef4444"
@@ -2303,7 +2573,13 @@ export default function Home() {
                       : isListening
                       ? "#3b82f6"
                       : "inherit",
-                    animation: isSpeechActive ? "pulse 1.5s ease-in-out infinite" : "none"
+                    animation: audioRecording
+                      ? "pulse 1s ease-in-out infinite"
+                      : wakeState === WAKE_STATE.CAPTURING_COMMAND
+                      ? "glow-cyan 1.2s ease-in-out infinite"
+                      : isSpeechActive
+                      ? "pulse 1.5s ease-in-out infinite"
+                      : "none"
                   }}
                   onClick={handleMicClick}
                   title={

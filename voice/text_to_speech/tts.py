@@ -1,8 +1,17 @@
+import re
 import subprocess
 import platform
 import threading
 import queue
-from typing import Optional
+from typing import Optional, AsyncGenerator
+
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
+
+DEFAULT_VOICE_EN = "en-IN-NeerjaExpressiveNeural"
+DEFAULT_VOICE_HI = "hi-IN-SwaraNeural"
 
 # Phonetic normalization for natural speech
 PHONETIC_MAP = {
@@ -15,6 +24,26 @@ def _normalize_for_speech(text: str) -> str:
     for key, val in PHONETIC_MAP.items():
         text = text.replace(key, val)
     return text
+
+def detect_voice_for_text(text: str, preferred_voice: Optional[str] = None) -> str:
+    """Select appropriate neural voice: Swara for Hindi text, Neerja for Indian English."""
+    if preferred_voice:
+        return preferred_voice
+    # Check for Devanagari script (Hindi characters)
+    if re.search(r"[\u0900-\u097F]", text):
+        return DEFAULT_VOICE_HI
+    return DEFAULT_VOICE_EN
+
+async def stream_neural_tts(text: str, voice: Optional[str] = None) -> AsyncGenerator[bytes, None]:
+    """Stream high-fidelity neural speech audio chunks from Microsoft Edge TTS."""
+    if edge_tts is None:
+        raise RuntimeError("edge-tts library is not installed")
+    normalized = _normalize_for_speech(text)
+    selected_voice = detect_voice_for_text(text, voice)
+    communicate = edge_tts.Communicate(normalized, selected_voice)
+    async for chunk in communicate.stream():
+        if chunk["type"] == "audio":
+            yield chunk["data"]
 
 class TextToSpeechService:
     """

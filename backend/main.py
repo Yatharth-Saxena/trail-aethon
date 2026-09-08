@@ -21,7 +21,7 @@ from experiment.state_machine.experiment_state import ExperimentEvent
 from ai.pipeline.perception_pipeline import perception_pipeline
 from voice.command_parser.aethon_command_service import aethon_command_service
 from voice.speech_to_text.stt import stt_service
-from voice.text_to_speech.tts import tts_service
+from voice.text_to_speech.tts import tts_service, stream_neural_tts, detect_voice_for_text
 from event_logging.event_logger import event_logger
 from data.session_manager import session_manager
 
@@ -56,27 +56,8 @@ async def broadcast_telemetry():
                 perception = perception_pipeline.get_perception_state()
                 exp_state = experiment_manager.get_state()
 
-                # Generate base64 JPEG thumbnail for WebSocket clients (e.g. legacy/alternate dashboards)
                 b64_img = ""
-                raw_frame = camera_service.get_latest_frame(annotated=True)
-                if raw_frame is not None:
-                    try:
-                        h, w = raw_frame.shape[:2]
-                        target_w = 640
-                        target_h = int(h * (target_w / w))
-                        thumb = cv2.resize(raw_frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
-                        _, buf = cv2.imencode('.jpg', thumb, [cv2.IMWRITE_JPEG_QUALITY, 65])
-                        b64_img = base64.b64encode(buf).decode('ascii')
-                    except Exception:
-                        b64_img = ""
-
-                # End-to-end latency: camera capture -> this telemetry send.
-                # camera_service reports capture -> publish; the remainder is
-                # overlay/encode plus this broadcast hop.
-                capture_ts = camera_service.get_capture_timestamp()
-                e2e_latency_ms = (
-                    round((time.time() - capture_ts) * 1000.0, 1) if capture_ts else 0.0
-                )
+                latency_ms = camera_service.get_pipeline_latency_ms()
 
                 payload = {
                     "type": "TELEMETRY",
@@ -85,8 +66,8 @@ async def broadcast_telemetry():
                         "recording": video_recorder.is_recording,
                         "device_index": camera_service.camera_index,
                         "mirror": camera_service.mirror,
-                        "latency_ms": e2e_latency_ms,
-                        "pipeline_latency_ms": camera_service.get_pipeline_latency_ms(),
+                        "latency_ms": latency_ms,
+                        "pipeline_latency_ms": latency_ms,
                         "negotiated": camera_service.negotiated
                     },
                     "perception": perception,
@@ -369,6 +350,43 @@ def execute_command(payload: Dict[str, Any]):
     text = payload.get("text", "")
     perception_state = perception_pipeline.get_perception_state()
     return aethon_command_service.handle_command(text, current_perception=perception_state)
+
+@app.get("/api/voice/tts")
+@app.post("/api/voice/tts")
+async def voice_tts_endpoint(
+    request: Request,
+    text: Optional[str] = Query(None),
+    voice: Optional[str] = Query(None)
+):
+    """
+    Microsoft High-Fidelity Neural Speech Synthesis Endpoint.
+    Streams warm, expressive natural speech audio (en-IN-NeerjaExpressiveNeural or hi-IN-SwaraNeural).
+    """
+    req_text = text
+    req_voice = voice
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                req_text = body.get("text", req_text)
+                req_voice = body.get("voice", req_voice)
+        except Exception:
+            pass
+
+    if not req_text or not req_text.strip():
+        raise HTTPException(status_code=400, detail="Missing text for speech synthesis")
+
+    clean_text = req_text.strip()
+    selected_voice = detect_voice_for_text(clean_text, req_voice)
+
+    return StreamingResponse(
+        stream_neural_tts(clean_text, selected_voice),
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "X-Voice-Used": selected_voice
+        }
+    )
 
 @app.post("/api/voice/transcribe")
 async def transcribe_audio(audio: UploadFile = File(...)):

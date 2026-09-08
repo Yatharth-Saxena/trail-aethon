@@ -21,6 +21,13 @@ class Intent(str, Enum):
     HELP = "HELP"
     GREETING = "GREETING"
     STATUS = "STATUS"
+    MISSION_DETAILS = "MISSION_DETAILS"
+    PROCEDURE_OVERVIEW = "PROCEDURE_OVERVIEW"
+    PROGRESS = "PROGRESS"
+    SAFETY_CHECK = "SAFETY_CHECK"
+    WHICH_HAND = "WHICH_HAND"
+    SPEED_CHECK = "SPEED_CHECK"
+    FUN_FACT = "FUN_FACT"
     MUTE = "MUTE"
     UNKNOWN = "UNKNOWN"
 
@@ -59,9 +66,9 @@ def has_wake_word(text: str) -> bool:
 # longest-form first so "ethane than" is consumed as one call rather than
 # leaving a stray "than" behind.
 WAKE_STRIP_PATTERNS = (
-    rf"^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.\s]*",
-    rf"^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)\s+(?:{WAKE_TWO_WORD_VARIANTS})\b[,.\s]*",
-    rf"^\s*(?:{WAKE_SINGLE_WORD_VARIANTS})\b[,.\s]*",
+    rf"^\s*(?:ethane|ethan|ae?thon|ae?than|athan|tane)\s+(?:than|then|ethan|ethane|ae?thon|ae?than|athan|tane|tan)\b[,.:;!?\s]*",
+    rf"^\s*(?:hey|hi|hello|ok|okay|he|a|ey|ay|suno)\s+(?:{WAKE_TWO_WORD_VARIANTS})\b[,.:;!?\s]*",
+    rf"^\s*(?:{WAKE_SINGLE_WORD_VARIANTS})\b[,.:;!?\s]*",
 )
 
 
@@ -220,6 +227,63 @@ class CommandParser:
                 r"\bwhat can you do\b",
                 r"\bwhat commands\b"
             ]),
+            (Intent.MISSION_DETAILS, [
+                r"\b(what('?s| is) )?(the )?mission\b",
+                r"\bexplain( the)? mission\b",
+                r"\babout( this)? experiment\b",
+                r"\bwhat are we doing\b",
+                r"\bwhat is payload assembly\b",
+                r"\bmission (overview|goal|objective|details)\b",
+                r"\bwhat is the goal\b",
+                r"\bwhy are we doing this\b",
+                r"\bmission brief\b"
+            ]),
+            (Intent.PROGRESS, [
+                r"\bhow many steps (left|remaining|done|completed)\b",
+                r"\b(what is )?(my |the )?progress\b",
+                r"\bhow far (am i|are we)\b",
+                r"\bprogress percentage\b",
+                r"\bpercentage( complete)?\b",
+                r"\bcurrent progress\b"
+            ]),
+            (Intent.PROCEDURE_OVERVIEW, [
+                r"\b(show|tell|list|what are) (all )?(the )?steps\b",
+                r"\bprocedure overview\b",
+                r"\bhow many steps\b",
+                r"\bwhat is the sequence\b",
+                r"\blist steps\b",
+                r"\ball steps\b",
+                r"\bentire procedure\b",
+                r"\bsequence of steps\b"
+            ]),
+            (Intent.SAFETY_CHECK, [
+                r"\bsafety( check| rules| guidelines| protocol| precautions)?\b",
+                r"\bis it safe\b",
+                r"\bprecaution(s)?\b",
+                r"\bhazard(s)?\b",
+                r"\bsafety status\b"
+            ]),
+            (Intent.WHICH_HAND, [
+                r"\bwhich hand\b",
+                r"\bwhat hand\b",
+                r"\bam i using (my )?(left|right) hand\b",
+                r"\bhand tracking\b",
+                r"\bdetect hand\b"
+            ]),
+            (Intent.SPEED_CHECK, [
+                r"\bhow fast\b",
+                r"\bcheck( my)? speed\b",
+                r"\bam i moving too fast\b",
+                r"\bmovement (speed|velocity|rate)\b",
+                r"\bvelocity check\b"
+            ]),
+            (Intent.FUN_FACT, [
+                r"\b(space |fun )?fact\b",
+                r"\btell me (a |something )?(space |fun )?fact\b",
+                r"\btrivia\b",
+                r"\btell me a joke\b",
+                r"\bspace trivia\b"
+            ]),
             (Intent.MUTE, [
                 r"\b(chup|chup raho|shut up|be quiet|silence|mute|stop talking|stop speaking)\b"
             ]),
@@ -235,6 +299,7 @@ class CommandParser:
                 r"\bwhat('?s| is) your name\b",
                 r"\bintroduce yourself\b",
                 r"\btell me about yourself\b",
+                r"\bwho (made|created|developed) (you|aethon)\b",
                 r"\bthank(s| you)( so much)?\b",
                 r"\bappreciate it\b",
                 r"\b(good|great) job\b",

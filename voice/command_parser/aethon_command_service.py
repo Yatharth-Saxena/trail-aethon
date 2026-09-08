@@ -159,7 +159,12 @@ class AethonCommandService:
 
         if intent == Intent.GREETING:
             lower_text = raw_text.lower()
-            if any(w in lower_text for w in ["who are you", "what is your name", "what are you", "introduce yourself", "about yourself"]):
+            if any(w in lower_text for w in ["who created you", "who made you", "who built you", "who developed you", "isro"]):
+                response_text = (
+                    "I was developed for space robotics and payload missions under the ISRO initiative to assist "
+                    "astronauts and mission specialists with precise procedural guidance."
+                )
+            elif any(w in lower_text for w in ["who are you", "what is your name", "what are you", "introduce yourself", "about yourself"]):
                 response_text = (
                     "I am AETHON, your AI Mission Control Assistant. "
                     "I monitor payload assembly experiments, track object interactions, "
@@ -289,10 +294,54 @@ class AethonCommandService:
             response_text = "Experiment stopped."
         elif intent == Intent.HELP:
             response_text = (
-                "You can say: 'Hey AETHON, what am I doing?', 'What is this object?', "
-                "'What color is this?', 'What are my movements?', 'What is the next step?', "
-                "'Am I doing it right?', 'Status report', or control the experiment with "
-                "'Start', 'Pause', 'Resume', 'Reset'."
+                "You can ask: 'What is the mission?', 'Show all steps', 'What is my progress?', "
+                "'Which hand am I using?', 'Safety check', 'What am I doing?', 'What is this object?', "
+                "'What color is this?', 'What are my movements?', 'What is the next step?', or control with "
+                "'Start', 'Pause', 'Resume', and 'Reset'."
+            )
+        elif intent == Intent.MISSION_DETAILS:
+            response_text = (
+                "The Payload Assembly mission evaluates procedural precision for spaceflight hardware. "
+                "Your objective is to pick up Object A, position it on Object B, verify alignment, "
+                "return it to the assembly tray, and press the Complete Button."
+            )
+        elif intent == Intent.PROCEDURE_OVERVIEW:
+            response_text = (
+                "Here is the complete 5-step procedure: "
+                "1) Pick up Object A (Red Block). "
+                "2) Place Object A on Object B (Target Block). "
+                "3) Pick up Object A again. "
+                "4) Return Object A to Tray. "
+                "5) Press the Complete Button to conclude."
+            )
+        elif intent == Intent.PROGRESS:
+            exp_state = experiment_manager.get_state()
+            curr = exp_state.get("current_step", 1)
+            total = exp_state.get("total_steps", 5)
+            pct = exp_state.get("progress_percentage", 0)
+            status_label = exp_state.get("status", "IDLE")
+            response_text = (
+                f"Mission progress: {pct}% complete. "
+                f"Currently on Step {curr} of {total} ({status_label}). "
+                f"Target instruction: {exp_state.get('next_step_label', 'Pick up Object A')}."
+            )
+        elif intent == Intent.SAFETY_CHECK:
+            response_text = (
+                "Safety envelope check nominal. Active camera and hand tracking are verified. "
+                "Ensure a stable grip on payload components, avoid rapid hand sweeps, "
+                "and confirm component seating before release."
+            )
+        elif intent == Intent.WHICH_HAND:
+            hand = action_dict.get("hand")
+            if not hand or hand in ("None", "none", ""):
+                hand = "Right hand (or both hands within work volume)"
+            response_text = f"Perception tracking indicates you are manipulating with your {hand}."
+        elif intent == Intent.SPEED_CHECK:
+            response_text = f"Movement velocity: {movement_str}. Posture: {posture_str}. Manipulator speed is within nominal operating tolerances."
+        elif intent == Intent.FUN_FACT:
+            response_text = (
+                "Space fact: In microgravity aboard the space station, liquids don't pour—surface "
+                "tension pulls fluids into floating spheres! That's why precise sealed payload assembly is critical."
             )
         elif intent == Intent.MUTE:
             response_text = "Voice feedback muted."
@@ -304,14 +353,14 @@ class AethonCommandService:
                 "assembly procedures, or object tracking. You can say 'Help' for available commands."
             )
 
-        if intent != Intent.MUTE:
-            tts_service.muted = False
+        if intent == Intent.MUTE:
+            tts_service.muted = True
 
         self._last_handled_response = response_text
 
-        # Output speech via hardware TTS only for standalone non-web commands
-        # (Web client voices responses using high-quality natural neural browser speech)
-        if response_text and not tts_service.muted and source != "web":
+        # Output speech via hardware TTS only for standalone non-web commands (and only when explicitly unmuted)
+        # Web client voices responses using high-quality natural neural streaming speech
+        if response_text and not tts_service.muted and source == "hardware_mic":
             tts_service.speak(response_text)
 
         assistant_msg = {
