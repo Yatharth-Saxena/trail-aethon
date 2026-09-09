@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <g transform="rotate(35 60 60)">
+    <!-- Handle -->
+    <rect x="57" y="32" width="6" height="74" rx="3" fill="#0284c7" stroke="#38bdf8" stroke-width="1.5"/>
+    <!-- Head -->
+    <rect x="56" y="16" width="8" height="18" rx="2" fill="#38bdf8"/>
+    <!-- Bristles -->
+    <rect x="64" y="16" width="6" height="16" fill="#ffffff" stroke="#94a3b8" stroke-width="0.5"/>
+  </g>
+</svg>

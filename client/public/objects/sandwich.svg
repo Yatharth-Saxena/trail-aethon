@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Bottom bread -->
+  <path d="M24 74 L96 74 C98 84 92 88 60 88 C28 88 22 84 24 74 Z" fill="#d97706" stroke="#b45309" stroke-width="1.5"/>
+  <!-- Fillings -->
+  <rect x="22" y="66" width="76" height="8" rx="2" fill="#16a34a"/>
+  <rect x="24" y="60" width="72" height="6" rx="2" fill="#dc2626"/>
+  <rect x="22" y="54" width="76" height="6" rx="2" fill="#eab308"/>
+  <!-- Top bread -->
+  <path d="M24 54 L96 54 C98 44 90 34 60 34 C30 34 22 44 24 54 Z" fill="#f59e0b" stroke="#b45309" stroke-width="2"/>
+</svg>

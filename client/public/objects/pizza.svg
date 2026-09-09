@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <path d="M60 102 L20 34 C36 24 84 24 100 34 Z" fill="#f59e0b" stroke="#d97706" stroke-width="2"/>
+  <!-- Crust -->
+  <path d="M18 34 C38 22 82 22 102 34" stroke="#b45309" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <!-- Pepperonis -->
+  <circle cx="56" cy="54" r="5" fill="#dc2626"/>
+  <circle cx="46" cy="42" r="4.5" fill="#dc2626"/>
+  <circle cx="72" cy="44" r="4.5" fill="#dc2626"/>
+  <circle cx="60" cy="74" r="4" fill="#dc2626"/>
+</svg>

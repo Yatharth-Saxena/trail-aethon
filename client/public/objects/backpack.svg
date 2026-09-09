@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Body -->
+  <path d="M36 40 C36 24 48 18 60 18 C72 18 84 24 84 40 L84 94 C84 100 78 104 70 104 L50 104 C42 104 36 100 36 94 Z" fill="#0f766e" stroke="#14b8a6" stroke-width="2"/>
+  <!-- Front Pocket -->
+  <rect x="42" y="56" width="36" height="38" rx="6" fill="#115e59" stroke="#2dd4bf" stroke-width="1.5"/>
+  <line x1="46" y1="68" x2="74" y2="68" stroke="#5eead4" stroke-width="1.5"/>
+  <!-- Straps / handle -->
+  <path d="M50 18 C50 12 70 12 70 18" stroke="#0d9488" stroke-width="3" fill="none"/>
+</svg>

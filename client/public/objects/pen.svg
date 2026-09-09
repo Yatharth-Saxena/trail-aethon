@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Pen Body angled -->
+  <g transform="rotate(45 60 60)">
+    <rect x="56" y="24" width="8" height="68" rx="2" fill="#38bdf8" stroke="#0284c7" stroke-width="1.5"/>
+    <path d="M56 92 L64 92 L60 106 Z" fill="#cbd5e1" stroke="#64748b" stroke-width="1"/>
+    <circle cx="60" cy="105" r="1" fill="#0f172a"/>
+    <rect x="55" y="20" width="10" height="6" rx="1.5" fill="#94a3b8"/>
+    <!-- Clip -->
+    <rect x="64" y="26" width="3" height="24" rx="1" fill="#cbd5e1"/>
+  </g>
+</svg>

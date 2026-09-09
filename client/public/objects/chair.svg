@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Backrest -->
+  <rect x="42" y="16" width="36" height="42" rx="6" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+  <rect x="48" y="24" width="24" height="26" rx="3" fill="#0f172a" stroke="#0284c7" stroke-width="1"/>
+  <!-- Seat -->
+  <rect x="34" y="60" width="52" height="12" rx="4" fill="#334155" stroke="#38bdf8" stroke-width="2"/>
+  <!-- Center Stem -->
+  <rect x="57" y="72" width="6" height="20" fill="#64748b"/>
+  <!-- Base legs -->
+  <path d="M30 102 L60 92 L90 102" stroke="#64748b" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="30" cy="103" r="2.5" fill="#38bdf8"/>
+  <circle cx="60" cy="93" r="2.5" fill="#38bdf8"/>
+  <circle cx="90" cy="103" r="2.5" fill="#38bdf8"/>
+</svg>

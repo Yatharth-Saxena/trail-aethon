@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <path d="M60 38 C42 22 24 44 26 68 C28 88 44 104 60 104 C76 104 92 88 94 68 C96 44 78 22 60 38 Z" fill="#dc2626" stroke="#b91c1c" stroke-width="2"/>
+  <!-- Stem -->
+  <path d="M60 38 C60 26 66 18 72 16" fill="none" stroke="#78350f" stroke-width="3" stroke-linecap="round"/>
+  <!-- Leaf -->
+  <path d="M68 24 C76 20 84 22 86 28 C84 32 76 30 68 24 Z" fill="#16a34a"/>
+</svg>

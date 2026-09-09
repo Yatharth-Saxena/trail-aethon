@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Perspective Tray -->
+  <polygon points="28,42 92,42 104,82 16,82" fill="#334155" stroke="#64748b" stroke-width="2"/>
+  <polygon points="34,48 86,48 94,76 26,76" fill="#0f172a" stroke="#00e6c8" stroke-width="1.5"/>
+  <line x1="60" y1="48" x2="60" y2="76" stroke="rgba(0,230,200,0.4)" stroke-width="1.5" stroke-dasharray="2 2"/>
+</svg>

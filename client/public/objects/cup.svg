@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="mug" x1="28" y1="36" x2="84" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#064e3b"/>
+    </linearGradient>
+  </defs>
+  <!-- Steam -->
+  <path d="M44 26 C42 20 48 16 46 12" stroke="#6ee7b7" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3"/>
+  <path d="M56 24 C54 18 60 14 58 10" stroke="#6ee7b7" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3"/>
+  <path d="M68 26 C66 20 72 16 70 12" stroke="#6ee7b7" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3"/>
+  <!-- Handle -->
+  <path d="M78 48 C94 48 94 82 78 84" fill="none" stroke="#34d399" stroke-width="6" stroke-linecap="round"/>
+  <!-- Mug Body -->
+  <path d="M30 36 L82 36 L76 96 C76 101 70 106 63 106 L49 106 C42 106 36 101 36 96 Z" fill="url(#mug)" stroke="#10b981" stroke-width="2"/>
+  <!-- Thermal Rim -->
+  <ellipse cx="56" cy="36" rx="26" ry="6" fill="#065f46" stroke="#34d399" stroke-width="2"/>
+  <ellipse cx="56" cy="36" rx="20" ry="4" fill="#312e81"/>
+  <!-- Emblem -->
+  <circle cx="56" cy="68" r="8" fill="none" stroke="#a7f3d0" stroke-width="1.5"/>
+  <polygon points="56,63 58.5,67.5 63,68 59.5,71.5 60.5,76 56,73.5 51.5,76 52.5,71.5 49,68 53.5,67.5" fill="#34d399"/>
+</svg>

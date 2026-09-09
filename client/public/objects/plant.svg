@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Leaves -->
+  <path d="M60 62 C50 46 36 44 32 50 C28 56 36 68 60 62 Z" fill="#10b981" stroke="#059669" stroke-width="1.5"/>
+  <path d="M60 58 C68 40 84 38 88 44 C92 50 82 62 60 58 Z" fill="#34d399" stroke="#059669" stroke-width="1.5"/>
+  <path d="M60 52 C56 32 64 20 68 22 C72 24 70 38 60 52 Z" fill="#6ee7b7" stroke="#059669" stroke-width="1.5"/>
+  <!-- Pot -->
+  <path d="M42 66 L78 66 L72 102 L48 102 Z" fill="#d97706" stroke="#b45309" stroke-width="2"/>
+  <rect x="38" y="62" width="44" height="6" rx="2" fill="#f59e0b" stroke="#b45309" stroke-width="1.5"/>
+</svg>

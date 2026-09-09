@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <g transform="rotate(25 60 60)">
+    <!-- Tines -->
+    <path d="M50 20 L50 44 C50 52 56 56 58 56 L58 100 C58 102 62 102 62 100 L62 56 C64 56 70 52 70 44 L70 20" stroke="#cbd5e1" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+    <line x1="56" y1="20" x2="56" y2="44" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round"/>
+    <line x1="64" y1="20" x2="64" y2="44" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>

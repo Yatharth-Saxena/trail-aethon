@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="compGrad" x1="20" y1="20" x2="100" y2="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#090d16"/>
+    </linearGradient>
+  </defs>
+  <!-- Main module box -->
+  <rect x="24" y="24" width="72" height="72" rx="10" fill="url(#compGrad)" stroke="#00e6c8" stroke-width="2"/>
+  <!-- Gold connector pins -->
+  <g fill="#f59e0b">
+    <rect x="36" y="18" width="6" height="6" rx="1"/>
+    <rect x="48" y="18" width="6" height="6" rx="1"/>
+    <rect x="60" y="18" width="6" height="6" rx="1"/>
+    <rect x="72" y="18" width="6" height="6" rx="1"/>
+  </g>
+  <!-- Optical lens / Sensor reticle -->
+  <circle cx="60" cy="60" r="18" stroke="#38bdf8" stroke-width="2" fill="#0284c7" fill-opacity="0.3"/>
+  <circle cx="60" cy="60" r="10" stroke="#00e6c8" stroke-width="1.5" fill="#0369a1"/>
+  <circle cx="60" cy="60" r="3" fill="#ffffff"/>
+  <!-- Crosshair ticks -->
+  <line x1="60" y1="36" x2="60" y2="40" stroke="#00e6c8" stroke-width="2"/>
+  <line x1="60" y1="80" x2="60" y2="84" stroke="#00e6c8" stroke-width="2"/>
+  <line x1="36" y1="60" x2="40" y2="60" stroke="#00e6c8" stroke-width="2"/>
+  <line x1="80" y1="60" x2="84" y2="60" stroke="#00e6c8" stroke-width="2"/>
+</svg>

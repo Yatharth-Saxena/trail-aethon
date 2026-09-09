@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="mouseGrad" x1="40" y1="18" x2="80" y2="102" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+  </defs>
+  <!-- Mouse Body -->
+  <path d="M40 44 C40 26 50 16 60 16 C70 16 80 26 80 44 L80 74 C80 92 70 104 60 104 C50 104 40 92 40 74 Z" fill="url(#mouseGrad)" stroke="#38bdf8" stroke-width="2"/>
+  <!-- Split line -->
+  <line x1="60" y1="16" x2="60" y2="48" stroke="#1e293b" stroke-width="2"/>
+  <!-- Scroll Wheel -->
+  <rect x="57" y="28" width="6" height="14" rx="3" fill="#00e6c8" stroke="#0284c7" stroke-width="1"/>
+  <!-- Accent LED lines -->
+  <path d="M48 64 C48 76 53 84 60 84 C67 84 72 76 72 64" fill="none" stroke="rgba(0,230,200,0.5)" stroke-width="1.5"/>
+</svg>

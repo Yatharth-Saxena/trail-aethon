@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="lapScreen" x1="30" y1="20" x2="90" y2="76" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+  </defs>
+  <!-- Lid -->
+  <rect x="24" y="20" width="72" height="52" rx="4" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
+  <!-- Display Area -->
+  <rect x="28" y="24" width="64" height="44" rx="2" fill="url(#lapScreen)"/>
+  <!-- Screen Graphic (Telemetry graph) -->
+  <path d="M34 56 L46 44 L54 50 L64 36 L72 44 L86 34" stroke="#00e6c8" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <circle cx="64" cy="36" r="2.5" fill="#00e6c8"/>
+  <circle cx="86" cy="34" r="2.5" fill="#38bdf8"/>
+  <!-- Base -->
+  <path d="M14 76 L106 76 L100 94 C99 96 97 98 94 98 L26 98 C23 98 21 96 20 94 Z" fill="#334155" stroke="#94a3b8" stroke-width="1.5"/>
+  <!-- Trackpad -->
+  <rect x="50" y="86" width="20" height="9" rx="1.5" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+  <!-- Keyboard area -->
+  <rect x="26" y="79" width="68" height="5" rx="1" fill="#0f172a"/>
+</svg>

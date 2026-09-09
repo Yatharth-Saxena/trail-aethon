@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="bowlGrad" x1="20" y1="40" x2="100" y2="94" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#0c4a6e"/>
+    </linearGradient>
+  </defs>
+  <!-- Bowl Base -->
+  <path d="M22 50 C22 84 40 96 60 96 C80 96 98 84 98 50 Z" fill="url(#bowlGrad)" stroke="#38bdf8" stroke-width="2"/>
+  <ellipse cx="60" cy="50" rx="38" ry="12" fill="#0369a1" stroke="#7dd3fc" stroke-width="2"/>
+  <ellipse cx="60" cy="50" rx="30" ry="8" fill="#082f49"/>
+  <rect x="46" y="96" width="28" height="6" rx="2" fill="#0369a1" stroke="#38bdf8" stroke-width="1"/>
+</svg>

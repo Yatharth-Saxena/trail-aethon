@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Barrel -->
+  <rect x="36" y="30" width="46" height="24" rx="4" fill="#0284c7" stroke="#38bdf8" stroke-width="2"/>
+  <rect x="82" y="34" width="12" height="16" fill="#1e293b" stroke="#64748b" stroke-width="1.5"/>
+  <circle cx="36" cy="42" r="12" fill="#0369a1"/>
+  <!-- Handle -->
+  <path d="M46 54 L52 94 C52 98 58 98 60 94 L66 54" fill="#0f172a" stroke="#64748b" stroke-width="2"/>
+</svg>

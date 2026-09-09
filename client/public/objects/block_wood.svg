@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Isometric Gold / Wooden Base Block -->
+  <polygon points="60,26 96,44 60,62 24,44" fill="#fbbf24" stroke="#fef08a" stroke-width="1.5"/>
+  <polygon points="60,62 96,44 96,82 60,100" fill="#d97706" stroke="#b45309" stroke-width="1.5"/>
+  <polygon points="60,62 24,44 24,82 60,100" fill="#92400e" stroke="#78350f" stroke-width="1.5"/>
+  <!-- Alignment Socket Target -->
+  <ellipse cx="60" cy="44" rx="10" ry="5" fill="#78350f" stroke="#fbbf24" stroke-width="1.5"/>
+</svg>

@@ -28,6 +28,8 @@ import {
 import { AudioRecorder } from "../lib/audioRecorder.js";
 import OpeningTransition from "../components/OpeningTransition";
 import Skeleton3D from "../components/Skeleton3D.jsx";
+import { getObjectVisual } from "../lib/objectImages.js";
+import NextStepVisual from "../components/NextStepVisual.jsx";
 
 const ISRO_LOGO = "/isro-logo.png";
 const ASSEMBLY = "/assembly.png";
@@ -1188,6 +1190,49 @@ export default function Home() {
     color: "Red",
     confidence: 0.92
   });
+
+  // Primary detected object visual for Current Action panel (null when no payload object detected)
+  const primaryObjectVisual = useMemo(() => {
+    const payloadObjects = detectedObjects.filter(
+      (it) => it.category !== "ASTRONAUT" &&
+              it.raw_label !== "Astronaut" &&
+              it.label !== "Astronaut" &&
+              it.raw_label !== "Person" &&
+              it.label !== "Person"
+    );
+    if (payloadObjects.length === 0) return null;
+
+    // 1. Any object currently held/manipulated
+    const heldObj = payloadObjects.find((o) => o.held || o.is_held);
+    if (heldObj) {
+      const visual = getObjectVisual(heldObj);
+      if (visual) return visual;
+    }
+
+    // 2. Object referenced in current action (if valid and present in detected objects)
+    if (currentAction?.object && currentAction.object !== "None") {
+      const actionObjLower = currentAction.object.toLowerCase();
+      const match = payloadObjects.find(
+        (o) => o.label?.toLowerCase() === actionObjLower ||
+               o.class_label?.toLowerCase() === actionObjLower ||
+               o.raw_label?.toLowerCase() === actionObjLower ||
+               o.display_name?.toLowerCase()?.includes(actionObjLower)
+      );
+      if (match) {
+        const visual = getObjectVisual(match);
+        if (visual) return visual;
+      }
+    }
+
+    // 3. Highest-confidence detected payload object
+    const sorted = [...payloadObjects].sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    for (const obj of sorted) {
+      const visual = getObjectVisual(obj);
+      if (visual) return visual;
+    }
+
+    return null;
+  }, [detectedObjects, currentAction?.object]);
 
   // Aethon Assistant state
   const [voiceMode, setVoiceMode] = useState(true);
@@ -3110,10 +3155,18 @@ export default function Home() {
                   <GlassPanel className="action-panel">
                     <PanelTitle title="Current Action" subtitle="Perception & movement state" />
                     <div className="current-action-content">
-                      <div className="action-thumbnail">
-                        <span className="fake-hand" />
-                        <span className="fake-block" />
-                      </div>
+                      {primaryObjectVisual && (
+                        <div className="action-thumbnail" title={primaryObjectVisual.name}>
+                          <img
+                            src={primaryObjectVisual.src}
+                            alt={primaryObjectVisual.name}
+                            className="action-thumbnail-img"
+                          />
+                          {primaryObjectVisual.badge && (
+                            <span className="object-thumbnail-badge">{primaryObjectVisual.badge}</span>
+                          )}
+                        </div>
+                      )}
                       <div className="action-copy">
                         <strong style={{ fontSize: 14 }}>{currentAction.label || "Ready / Monitoring"}</strong>
                         {currentAction.narration && currentAction.narration !== "Monitoring" && (
@@ -3144,7 +3197,13 @@ export default function Home() {
                     <PanelTitle title="Next Step" />
                     <div className="next-content">
                       <div className="assembly-visual">
-                        <img src={ASSEMBLY} alt="Red block positioned above a wooden block" />
+                        <NextStepVisual
+                          stepNumber={experimentState.current_step || 1}
+                          totalSteps={experimentState.total_steps || 5}
+                          nextStepLabel={experimentState.next_step_label || ""}
+                          stepData={(experimentState.steps || [])[((experimentState.current_step || 1) - 1)] || null}
+                          status={experimentState.status || "IDLE"}
+                        />
                       </div>
                       <div className="next-copy">
                         <strong>{experimentState.next_step_label || "Place Object A on Object B."}</strong>

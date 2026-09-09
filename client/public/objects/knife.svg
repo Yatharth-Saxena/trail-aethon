@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <g transform="rotate(-35 60 60)">
+    <!-- Blade -->
+    <path d="M57 16 C60 16 63 30 63 60 L57 60 Z" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/>
+    <!-- Guard -->
+    <rect x="53" y="60" width="14" height="4" rx="1" fill="#f59e0b"/>
+    <!-- Handle -->
+    <rect x="56" y="64" width="8" height="40" rx="3" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+    <circle cx="60" cy="74" r="1.5" fill="#94a3b8"/>
+    <circle cx="60" cy="84" r="1.5" fill="#94a3b8"/>
+    <circle cx="60" cy="94" r="1.5" fill="#94a3b8"/>
+  </g>
+</svg>

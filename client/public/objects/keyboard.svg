@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Body -->
+  <rect x="14" y="34" width="92" height="52" rx="6" fill="#1e293b" stroke="#38bdf8" stroke-width="2"/>
+  <!-- Key rows -->
+  <g fill="#334155" stroke="#475569" stroke-width="0.75">
+    <!-- Row 1 -->
+    <rect x="20" y="40" width="8" height="6" rx="1"/>
+    <rect x="31" y="40" width="8" height="6" rx="1"/>
+    <rect x="42" y="40" width="8" height="6" rx="1"/>
+    <rect x="53" y="40" width="8" height="6" rx="1"/>
+    <rect x="64" y="40" width="8" height="6" rx="1"/>
+    <rect x="75" y="40" width="8" height="6" rx="1"/>
+    <rect x="86" y="40" width="14" height="6" rx="1" fill="#0284c7"/>
+    <!-- Row 2 -->
+    <rect x="20" y="49" width="12" height="6" rx="1"/>
+    <rect x="35" y="49" width="8" height="6" rx="1"/>
+    <rect x="46" y="49" width="8" height="6" rx="1"/>
+    <rect x="57" y="49" width="8" height="6" rx="1"/>
+    <rect x="68" y="49" width="8" height="6" rx="1"/>
+    <rect x="79" y="49" width="8" height="6" rx="1"/>
+    <rect x="90" y="49" width="10" height="6" rx="1"/>
+    <!-- Row 3 -->
+    <rect x="20" y="58" width="14" height="6" rx="1"/>
+    <rect x="37" y="58" width="8" height="6" rx="1"/>
+    <rect x="48" y="58" width="8" height="6" rx="1" fill="#00e6c8"/>
+    <rect x="59" y="58" width="8" height="6" rx="1"/>
+    <rect x="70" y="58" width="8" height="6" rx="1"/>
+    <rect x="81" y="58" width="19" height="6" rx="1" fill="#0284c7"/>
+    <!-- Row 4 -->
+    <rect x="20" y="67" width="16" height="6" rx="1"/>
+    <rect x="39" y="67" width="42" height="6" rx="1.5" fill="#475569"/>
+    <rect x="84" y="67" width="16" height="6" rx="1"/>
+  </g>
+  <!-- Indicator dots -->
+  <circle cx="94" cy="78" r="1.5" fill="#00e6c8"/>
+  <circle cx="99" cy="78" r="1.5" fill="#38bdf8"/>
+</svg>

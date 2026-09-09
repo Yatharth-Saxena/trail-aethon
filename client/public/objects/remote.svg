@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <rect x="42" y="14" width="36" height="92" rx="10" fill="#1e293b" stroke="#64748b" stroke-width="2"/>
+  <circle cx="60" cy="24" r="3" fill="#ef4444"/>
+  <!-- D-pad -->
+  <circle cx="60" cy="46" r="12" fill="#0f172a" stroke="#38bdf8" stroke-width="1.5"/>
+  <polygon points="60,37 57,41 63,41" fill="#38bdf8"/>
+  <polygon points="60,55 57,51 63,51" fill="#38bdf8"/>
+  <polygon points="51,46 55,43 55,49" fill="#38bdf8"/>
+  <polygon points="69,46 65,43 65,49" fill="#38bdf8"/>
+  <!-- Number buttons -->
+  <circle cx="51" cy="66" r="3" fill="#334155"/>
+  <circle cx="60" cy="66" r="3" fill="#334155"/>
+  <circle cx="69" cy="66" r="3" fill="#334155"/>
+  <circle cx="51" cy="76" r="3" fill="#334155"/>
+  <circle cx="60" cy="76" r="3" fill="#334155"/>
+  <circle cx="69" cy="76" r="3" fill="#334155"/>
+  <circle cx="51" cy="86" r="3" fill="#334155"/>
+  <circle cx="60" cy="86" r="3" fill="#334155"/>
+  <circle cx="69" cy="86" r="3" fill="#334155"/>
+  <rect x="52" y="94" width="16" height="4" rx="2" fill="#0284c7"/>
+</svg>

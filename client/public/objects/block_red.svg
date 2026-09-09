@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Isometric Red Cube -->
+  <polygon points="60,24 94,42 60,60 26,42" fill="#f87171" stroke="#fca5a5" stroke-width="1.5"/>
+  <polygon points="60,60 94,42 94,80 60,98" fill="#dc2626" stroke="#b91c1c" stroke-width="1.5"/>
+  <polygon points="60,60 26,42 26,80 60,98" fill="#991b1b" stroke="#7f1d1d" stroke-width="1.5"/>
+  <!-- Tech Markings / Payload Cross -->
+  <line x1="60" y1="36" x2="60" y2="48" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+  <line x1="50" y1="42" x2="70" y2="42" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+</svg>
