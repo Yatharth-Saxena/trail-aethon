@@ -22,6 +22,10 @@ from backend.config import (
     FALLBACK_DETECTOR_WEIGHTS,
     DETECTION_VOTE_WINDOW,
     DETECTION_VOTE_MIN_HITS,
+    DETECTION_CONFIRM_FRAMES_ON,
+    DETECTION_CONFIRM_FRAMES_OFF,
+    DETECTION_OCCLUSION_PREDICT_FRAMES,
+    CONFIDENCE_EMA_ALPHA,
     DETECTION_MAX_MISSES,
     DETECTION_MAX_MISSES_CONFIRMED,
     DETECTION_MAX_MISSES_CANDIDATE,
@@ -39,6 +43,7 @@ from backend.config import (
     OBJECT_MOTION_HISTORY,
     OBJECT_DOMAIN_TAXONOMY,
 )
+from event_logging.event_logger import event_logger
 
 # ---------------------------------------------------------------------------
 # Detection / tracking configuration
@@ -128,7 +133,7 @@ def extract_dominant_color(frame_bgr: np.ndarray, bbox: List[int]) -> Dict[str, 
     v_chan = hsv[:, :, 2].astype(np.float32)
 
     total = h_chan.size
-    chromatic = (s_chan > 65) & (v_chan > 45) & (v_chan < 252)
+    chromatic = (s_chan > 65) & (v_chan > 45) & ~((s_chan < 85) & (v_chan > 250))
     chroma_ratio = float(np.count_nonzero(chromatic)) / float(total)
 
     if chroma_ratio < 0.20:
@@ -377,6 +382,21 @@ def _validate_person_candidate(
 # ---------------------------------------------------------------------------
 # Tracks
 # ---------------------------------------------------------------------------
+class _ConfirmedState(int):
+    """
+    Evaluates as a boolean in expressions (if track.confirmed:),
+    and is also callable as a method (track.confirmed()) for compatibility.
+    """
+    def __bool__(self):
+        return int(self) != 0
+
+    def __call__(self):
+        return bool(self)
+
+    def __repr__(self):
+        return "True" if self else "False"
+
+
 class _Track:
     """
     One tracked object across frames.
@@ -386,15 +406,19 @@ class _Track:
     """
 
     __slots__ = (
-        "track_id", "bbox", "confidence", "class_label", "misses",
-        "last_frame", "hit_window", "color_votes", "alias_votes", "color_conf",
-        "centroids", "speed", "moving", "motion_streak", "still_streak",
-        "vx", "vy",
+        "track_id", "bbox", "confidence", "confidence_ema", "raw_confidence",
+        "class_label", "misses", "last_frame", "hit_window", "color_votes",
+        "alias_votes", "color_conf", "centroids", "speed", "moving",
+        "motion_streak", "still_streak", "vx", "vy",
+        "consec_above", "consec_below", "_confirmed", "predicted_frames",
+        "track_status", "pose", "posture", "_below_floor_logged",
     )
 
     def __init__(self, track_id: int, bbox: List[int], confidence: float, class_label: str, frame_id: int):
         self.track_id = track_id
-        self.bbox = bbox
+        self.bbox = list(bbox)
+        self.raw_confidence = confidence
+        self.confidence_ema = confidence
         self.confidence = confidence
         self.class_label = class_label
         self.misses = 0
@@ -413,15 +437,116 @@ class _Track:
         self.vx = 0.0
         self.vy = 0.0
 
+        # Hysteresis confirmation counters
+        self.consec_above = 1 if confidence >= CONFIDENCE_THRESHOLD_OBJECT else 0
+        self.consec_below = 0 if confidence >= CONFIDENCE_THRESHOLD_OBJECT else 1
+        self._confirmed = (self.consec_above >= DETECTION_CONFIRM_FRAMES_ON)
+        self.predicted_frames = 0
+        self.track_status = "TRACKED"
+        self.pose = None
+        self.posture = "Seated"
+        self._below_floor_logged = False
+
     @property
-    def confirmed(self) -> bool:
-        """Committed once seen in N of the last M frames."""
-        return sum(self.hit_window) >= DETECTION_VOTE_MIN_HITS
+    def confirmed(self) -> _ConfirmedState:
+        """Confirmed once N consecutive frames are above threshold; drops only after M below."""
+        return _ConfirmedState(1 if self._confirmed else 0)
+
+    def is_confirmed(self) -> bool:
+        return self._confirmed
 
     def majority(self, votes: deque, default: Any = None) -> Any:
         if not votes:
             return default
         return Counter(votes).most_common(1)[0][0]
+
+    def update_confidence(self, confidence: float):
+        """Update EMA confidence and apply hysteresis confirmation logic."""
+        self.raw_confidence = confidence
+        self.confidence_ema = CONFIDENCE_EMA_ALPHA * confidence + (1.0 - CONFIDENCE_EMA_ALPHA) * self.confidence_ema
+        self.confidence = self.confidence_ema
+
+        if confidence >= CONFIDENCE_THRESHOLD_OBJECT:
+            self.consec_above += 1
+            self.consec_below = 0
+            if not self._confirmed and self.consec_above >= DETECTION_CONFIRM_FRAMES_ON:
+                self._confirmed = True
+        else:
+            self.consec_below += 1
+            self.consec_above = 0
+            if self._confirmed and self.consec_below >= DETECTION_CONFIRM_FRAMES_OFF:
+                self._confirmed = False
+
+    def _check_floor_crossing(self, prev_ema: float):
+        """Log via event_logger when a confirmed track's confidence_ema crosses below class floor."""
+        class_floor = CONFIDENCE_THRESHOLD_OBJECT
+        for _cid, (lbl, conf) in OBJECT_CLASS_CONFIDENCE.items():
+            if lbl.lower() == self.class_label.lower():
+                class_floor = conf
+                break
+
+        if self._confirmed:
+            if prev_ema >= class_floor and self.confidence_ema < class_floor and not self._below_floor_logged:
+                self._below_floor_logged = True
+                event_logger.log(
+                    "TRACK_CONF_DRIFT",
+                    f"Track #{self.track_id} ({self.class_label}) confidence_ema {self.confidence_ema:.2f} fell below floor {class_floor:.2f}",
+                    {
+                        "track_id": self.track_id,
+                        "class_label": self.class_label,
+                        "confidence_ema": round(self.confidence_ema, 3),
+                        "class_floor": class_floor,
+                    },
+                    level="WARN",
+                )
+            elif self.confidence_ema >= class_floor:
+                self._below_floor_logged = False
+
+    def update_detection(self, bbox: List[int], confidence: float, frame_id: int, frame_width: int, now: float):
+        """Update track with a newly matched bounding box and confidence."""
+        prev_ema = self.confidence_ema
+        self.bbox = _smooth_box(self.bbox, bbox)
+        self.update_confidence(confidence)
+        self.hit_window.append(1)
+        self.misses = 0
+        self.predicted_frames = 0
+        self.track_status = "TRACKED"
+        self.last_frame = frame_id
+        self.record_motion(frame_width, now)
+        self._check_floor_crossing(prev_ema)
+
+    def update_miss(self, frame_width: int, frame_height: int, now: float):
+        """Handle a frame where this track had no matching detection (bridge occlusion)."""
+        prev_ema = self.confidence_ema
+        self.hit_window.append(0)
+        self.misses += 1
+        self.raw_confidence = 0.0
+        self.confidence_ema *= 0.85
+        self.confidence = self.confidence_ema
+        self.consec_below += 1
+        self.consec_above = 0
+        if self._confirmed and self.consec_below >= DETECTION_CONFIRM_FRAMES_OFF:
+            self._confirmed = False
+
+        if self._confirmed and self.predicted_frames < DETECTION_OCCLUSION_PREDICT_FRAMES:
+            self.predicted_frames += 1
+            self.track_status = "PREDICTED"
+            # Constant-velocity linear extrapolation
+            dx = int(round(self.vx)) if len(self.centroids) >= 2 else 0
+            dy = int(round(self.vy)) if len(self.centroids) >= 2 else 0
+            self.bbox = [
+                max(0, self.bbox[0] + dx),
+                max(0, self.bbox[1] + dy),
+                min(frame_width - 1, self.bbox[2] + dx),
+                min(frame_height - 1, self.bbox[3] + dy),
+            ]
+            cx = (self.bbox[0] + self.bbox[2]) / 2.0
+            cy = (self.bbox[1] + self.bbox[3]) / 2.0
+            self.centroids.append((now, cx, cy))
+        else:
+            self.track_status = "OCCLUDED"
+
+        self._check_floor_crossing(prev_ema)
 
     def record_motion(self, frame_width: int, now: float):
         """
@@ -595,27 +720,32 @@ class CustomObjectDetector:
         frame_height: int,
         now: float,
     ) -> List[_Track]:
-        """Greedy IoU association of *candidates* to the tracks of one class."""
+        """
+        Greedy association of candidates to tracks, weighted by both IoU
+        and label agreement to prevent track identity swaps.
+        Returns both matched tracks (TRACKED) and actively occluded tracks (PREDICTED).
+        """
         tracks = self._tracks.setdefault(class_label, [])
-        candidates = sorted(candidates, key=lambda d: d["confidence"], reverse=True)
+        candidates = sorted(candidates, key=lambda d: d.get("confidence", 0.0), reverse=True)
         unmatched_tracks = list(tracks)
         matched: List[_Track] = []
 
         for cand in candidates:
-            best_track, best_iou = None, 0.0
+            best_track, best_score = None, 0.0
+            cand_bbox = cand["bbox"]
+            cand_label = cand.get("class_label", class_label)
             for tr in unmatched_tracks:
-                score = _iou(cand["bbox"], tr.bbox)
-                if score > best_iou:
-                    best_track, best_iou = tr, score
+                iou = _iou(cand_bbox, tr.bbox)
+                if iou <= 0.05:
+                    continue
+                label_bonus = 0.15 if cand_label.lower() == tr.class_label.lower() else 0.0
+                score = iou + label_bonus
+                if score > best_score:
+                    best_track, best_score = tr, score
 
-            if best_track is not None and best_iou >= TRACK_IOU_MATCH:
+            if best_track is not None and best_score >= TRACK_IOU_MATCH:
                 unmatched_tracks.remove(best_track)
-                best_track.bbox = _smooth_box(best_track.bbox, cand["bbox"])
-                best_track.confidence = max(cand["confidence"], best_track.confidence * 0.9)
-                best_track.hit_window.append(1)
-                best_track.misses = 0
-                best_track.last_frame = self._frame_id
-                best_track.record_motion(frame_width, now)
+                best_track.update_detection(cand["bbox"], cand["confidence"], self._frame_id, frame_width, now)
                 matched.append(best_track)
             else:
                 tr = _Track(self._next_track_id, cand["bbox"], cand["confidence"], class_label, self._frame_id)
@@ -624,25 +754,18 @@ class CustomObjectDetector:
                 tracks.append(tr)
                 matched.append(tr)
 
-        # Age tracks that received no detection this frame. Extrapolate bbox for occlusions.
+        # Age tracks that received no detection this frame.
+        surviving_predicted: List[_Track] = []
         for tr in unmatched_tracks:
-            tr.hit_window.append(0)
-            tr.misses += 1
-            tr.confidence *= 0.85
-            if tr.confirmed and (abs(tr.vx) > 0.5 or abs(tr.vy) > 0.5):
-                dx, dy = int(tr.vx), int(tr.vy)
-                tr.bbox = [
-                    max(0, tr.bbox[0] + dx),
-                    max(0, tr.bbox[1] + dy),
-                    min(frame_width - 1, tr.bbox[2] + dx),
-                    min(frame_height - 1, tr.bbox[3] + dy),
-                ]
+            tr.update_miss(frame_width, frame_height, now)
+            if tr.confirmed and tr.track_status == "PREDICTED":
+                surviving_predicted.append(tr)
 
         self._tracks[class_label] = [
             tr for tr in tracks
             if tr.misses <= (DETECTION_MAX_MISSES_CONFIRMED if tr.confirmed else DETECTION_MAX_MISSES_CANDIDATE)
         ]
-        return matched
+        return matched + surviving_predicted
 
     def _track_astronauts(
         self,
@@ -678,11 +801,7 @@ class CustomObjectDetector:
             if best_track is not None and best_score >= 0.15:
                 unmatched_tracks.remove(best_track)
                 best_track.bbox = _smooth_box(best_track.bbox, cand_bbox)
-                best_track.confidence = max(cand_conf, best_track.confidence * 0.92)
-                best_track.hit_window.append(1)
-                best_track.misses = 0
-                best_track.last_frame = self._frame_id
-                best_track.record_motion(frame_width, now)
+                best_track.update_detection(cand_bbox, cand_conf, self._frame_id, frame_width, now)
                 best_track.pose = cand.get("pose")
                 best_track.posture = cand.get("posture", "Seated")
                 matched.append(best_track)
@@ -702,9 +821,7 @@ class CustomObjectDetector:
         # Age tracks that received no detection this frame
         dead_ids = []
         for tr in unmatched_tracks:
-            tr.hit_window.append(0)
-            tr.misses += 1
-            tr.confidence *= 0.88
+            tr.update_miss(frame_width, frame_height, now)
             if tr.misses > 2:
                 dead_ids.append(tr.track_id)
 
@@ -834,18 +951,13 @@ class CustomObjectDetector:
             if det["confidence"] >= required:
                 by_class.setdefault(det["class_label"], []).append(det)
 
-        # Age out classes that disappeared entirely this frame
-        for class_label in list(self._tracks.keys()):
-            if class_label not in by_class:
-                self._associate(class_label, [], w, h, now)
-
         detections: List[Dict[str, Any]] = []
 
         # Emit all tracked astronauts
         for tr in astro_tracks:
             if not tr.confirmed:
                 continue
-            track_status = "TRACKED" if tr.misses == 0 else "OCCLUDED"
+            track_status = tr.track_status
             cx, cy = int((tr.bbox[0] + tr.bbox[2]) / 2.0), int((tr.bbox[1] + tr.bbox[3]) / 2.0)
             posture_str = getattr(tr, "posture", "Seated")
             matched_pose = getattr(tr, "pose", None)
@@ -859,7 +971,9 @@ class CustomObjectDetector:
                 "role": f"Mission Operator #{tr.track_id} / EVA Specialist",
                 "color": "EVA Spacesuit",
                 "color_hex": "#00e6c8",
-                "confidence": round(min(0.99, tr.confidence), 2),
+                "confidence": round(min(0.99, tr.confidence_ema), 3),
+                "raw_confidence": round(float(tr.raw_confidence), 3),
+                "confidence_ema": round(float(tr.confidence_ema), 3),
                 "bbox": list(tr.bbox),
                 "is_held": False,
                 "held": False,
@@ -869,18 +983,22 @@ class CustomObjectDetector:
                 "moving": tr.moving,
                 "track_id": tr.track_id,
                 "track_status": track_status,
+                "track_age_frames": int(tr.last_frame),
+                "confirmed": bool(tr.confirmed),
                 "position": {"cx": cx, "cy": cy},
                 "posture": posture_str,
                 "pose": matched_pose,
                 "timestamp": now,
             })
 
-        for class_label, candidates in by_class.items():
+        all_classes = set(self._tracks.keys()) | set(by_class.keys())
+        for class_label in sorted(all_classes):
+            candidates = by_class.get(class_label, [])
             for tr in self._associate(class_label, candidates, w, h, now):
                 if not tr.confirmed:
                     continue
 
-                track_status = "TRACKED" if tr.misses == 0 else "OCCLUDED"
+                track_status = tr.track_status
                 cx, cy = int((tr.bbox[0] + tr.bbox[2]) / 2.0), int((tr.bbox[1] + tr.bbox[3]) / 2.0)
 
                 # Colour is voted over the track's recent history
@@ -939,7 +1057,9 @@ class CustomObjectDetector:
                     "display_name": display_name,
                     "color": color_name,
                     "color_hex": color_hex,
-                    "confidence": round(min(0.99, tr.confidence), 2),
+                    "confidence": round(min(0.99, tr.confidence_ema), 3),
+                    "raw_confidence": round(float(tr.raw_confidence), 3),
+                    "confidence_ema": round(float(tr.confidence_ema), 3),
                     "bbox": list(tr.bbox),
                     "is_held": False,
                     "held": False,
@@ -949,6 +1069,8 @@ class CustomObjectDetector:
                     "moving": tr.moving,
                     "track_id": tr.track_id,
                     "track_status": track_status,
+                    "track_age_frames": int(tr.last_frame),
+                    "confirmed": bool(tr.confirmed),
                     "position": {"cx": cx, "cy": cy},
                     "timestamp": now,
                 })

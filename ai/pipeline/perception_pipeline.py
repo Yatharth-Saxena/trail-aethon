@@ -18,6 +18,8 @@ from ai.tracking.pose_tracker import pose_tracker
 from ai.gestures.gesture_pipeline import gesture_pipeline
 from ai.interaction.hand_object_interaction import hand_object_interaction
 from ai.actions.action_recognizer import action_recognizer
+from ai.detection.attribute_extractor import extract_attributes
+from ai.schemas import ObjectAttributes, ColorInfo, SizeEstimate, ShapeInfo, StabilityInfo
 from camera.camera_service import camera_service
 from experiment.manager import experiment_manager
 from event_logging.event_logger import event_logger
@@ -343,6 +345,51 @@ class PerceptionPipeline:
                         frame_shape=(h_orig, w_orig),
                     )
 
+                    # 4. Attribute extraction — executed once per confirmed object per detection cycle
+                    for obj in objects:
+                        if obj.get("category") == "ASTRONAUT":
+                            astro_w = max(0, obj["bbox"][2] - obj["bbox"][0])
+                            astro_h = max(0, obj["bbox"][3] - obj["bbox"][1])
+                            area_frac = round(float(astro_w * astro_h) / max(1.0, float(w_orig * h_orig)), 5)
+                            astro_attrs = ObjectAttributes(
+                                color=ColorInfo(name="EVA Spacesuit", hex="#00e6c8", confidence=0.95),
+                                size_estimate=SizeEstimate(width_px=astro_w, height_px=astro_h, area_frac=area_frac),
+                                shape=ShapeInfo(aspect_ratio=round(float(astro_w) / max(1.0, float(astro_h)), 3), orientation_deg=0.0),
+                                texture="smooth",
+                                motion_state="MOVING" if obj.get("is_moving") else "STATIC",
+                                stability=StabilityInfo(
+                                    track_age_frames=int(obj.get("track_age_frames", 1)),
+                                    confidence_ema=round(float(obj.get("confidence_ema", 0.95)), 3),
+                                    confirmed=True,
+                                )
+                            )
+                            obj["attributes"] = astro_attrs.model_dump()
+                            obj["size_estimate"] = astro_attrs.size_estimate.model_dump()
+                            obj["shape"] = astro_attrs.shape.model_dump()
+                            obj["texture"] = astro_attrs.texture
+                            obj["motion_state"] = astro_attrs.motion_state
+                            obj["stability"] = astro_attrs.stability.model_dump()
+                        else:
+                            attrs = extract_attributes(
+                                frame_bgr=frame,
+                                bbox=obj["bbox"],
+                                track_age_frames=obj.get("track_age_frames", 1),
+                                confidence_ema=obj.get("confidence_ema", obj.get("confidence", 0.9)),
+                                confirmed=obj.get("confirmed", True),
+                                is_held=obj.get("is_held", False),
+                                is_moving=obj.get("is_moving", False),
+                                track_status=obj.get("track_status", "TRACKED"),
+                                interactions=interactions,
+                                object_label=obj.get("label", ""),
+                            )
+                            validated = ObjectAttributes(**attrs)
+                            obj["attributes"] = validated.model_dump()
+                            obj["size_estimate"] = validated.size_estimate.model_dump()
+                            obj["shape"] = validated.shape.model_dump()
+                            obj["texture"] = validated.texture
+                            obj["motion_state"] = validated.motion_state
+                            obj["stability"] = validated.stability.model_dump()
+
                     with self.lock:
                         self.latest_objects = objects
                         self.latest_interactions = interactions
@@ -498,6 +545,17 @@ class PerceptionPipeline:
                     astro_id = idx + 1
                     pb = p_item.get("bbox", [0, 0, 0, 0])
                     p_posture = p_item.get("posture", posture)
+                    astro_w = max(0, pb[2] - pb[0])
+                    astro_h = max(0, pb[3] - pb[1])
+                    area_frac = round(float(astro_w * astro_h) / max(1.0, float(fw * fh)), 5)
+                    synth_attrs = ObjectAttributes(
+                        color=ColorInfo(name="EVA Spacesuit", hex="#00e6c8", confidence=0.95),
+                        size_estimate=SizeEstimate(width_px=astro_w, height_px=astro_h, area_frac=area_frac),
+                        shape=ShapeInfo(aspect_ratio=round(float(astro_w) / max(1.0, float(astro_h)), 3), orientation_deg=0.0),
+                        texture="smooth",
+                        motion_state="STATIC",
+                        stability=StabilityInfo(track_age_frames=1, confidence_ema=0.96, confirmed=True)
+                    )
                     bound_objects.append({
                         "label": "Astronaut",
                         "raw_label": "Astronaut",
@@ -509,17 +567,46 @@ class PerceptionPipeline:
                         "color": "EVA Spacesuit",
                         "color_hex": "#00e6c8",
                         "confidence": 0.96,
+                        "raw_confidence": 0.96,
+                        "confidence_ema": 0.96,
                         "bbox": pb,
                         "track_id": astro_id,
                         "track_status": "TRACKED",
+                        "track_age_frames": 1,
+                        "confirmed": True,
                         "hands": valid_hands,
                         "skeleton_tracked": True,
                         "posture": p_posture,
                         "action": act.get("label", f"{p_posture} at Station"),
+                        "attributes": synth_attrs.model_dump(),
+                        "size_estimate": synth_attrs.size_estimate.model_dump(),
+                        "shape": synth_attrs.shape.model_dump(),
+                        "texture": synth_attrs.texture,
+                        "motion_state": synth_attrs.motion_state,
+                        "stability": synth_attrs.stability.model_dump(),
                     })
 
-            # Attach resolution-independent normalized_bbox [0.0 .. 1.0] to all objects
+            # Attach resolution-independent normalized_bbox [0.0 .. 1.0] and ensure validated attributes
             for obj in bound_objects:
+                if "attributes" not in obj or not isinstance(obj["attributes"], dict):
+                    fallback_attrs = ObjectAttributes(
+                        color=ColorInfo(
+                            name=str(obj.get("color", "Unknown")),
+                            hex=str(obj.get("color_hex", "#888888")),
+                            confidence=float(obj.get("confidence", 0.0)),
+                        ),
+                        stability=StabilityInfo(
+                            track_age_frames=int(obj.get("track_age_frames", 1)),
+                            confidence_ema=float(obj.get("confidence_ema", obj.get("confidence", 0.0))),
+                            confirmed=bool(obj.get("confirmed", True)),
+                        ),
+                    )
+                    obj["attributes"] = fallback_attrs.model_dump()
+                    obj["size_estimate"] = fallback_attrs.size_estimate.model_dump()
+                    obj["shape"] = fallback_attrs.shape.model_dump()
+                    obj["texture"] = fallback_attrs.texture
+                    obj["motion_state"] = fallback_attrs.motion_state
+                    obj["stability"] = fallback_attrs.stability.model_dump()
                 b = obj.get("bbox")
                 if b and len(b) >= 4:
                     obj["normalized_bbox"] = [

@@ -344,6 +344,16 @@ TEMPORAL_BUFFER_SIZE = 30
 # DETECTION_VOTE_MIN_HITS of the last DETECTION_VOTE_WINDOW frames.
 DETECTION_VOTE_WINDOW = 8
 DETECTION_VOTE_MIN_HITS = 5
+# Hysteresis: frames above threshold before a track becomes confirmed.
+DETECTION_CONFIRM_FRAMES_ON = 3
+# Hysteresis: frames below threshold before a confirmed track loses confirmation.
+# Must be > DETECTION_CONFIRM_FRAMES_ON so confirmation is sticky.
+DETECTION_CONFIRM_FRAMES_OFF = 7
+# Maximum frames a confirmed track is predicted (bbox extrapolated) during occlusion
+# before it is deleted. Predicted frames are marked track_status="PREDICTED".
+DETECTION_OCCLUSION_PREDICT_FRAMES = 8
+# EMA alpha for per-track confidence smoothing (lower = smoother, higher = more reactive).
+CONFIDENCE_EMA_ALPHA = 0.30
 # Two-tiered miss limits for tracking:
 DETECTION_MAX_MISSES_CONFIRMED = 15  # Confirmed tracks survive temporary occlusion
 DETECTION_MAX_MISSES_CANDIDATE = 2   # Candidate unconfirmed tracks are pruned immediately
